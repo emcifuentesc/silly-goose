@@ -34,8 +34,8 @@ extension GooseBLEClient {
     guard notificationCharacteristicIDs.contains(characteristic.uuid), !pendingDebugCommands.isEmpty else {
       return
     }
-    for frame in Self.v5Frames(in: value) {
-      guard let payload = Self.v5Payload(in: frame),
+    for frame in Self.frames(in: value, for: characteristic) {
+      guard let payload = Self.payload(in: frame, for: characteristic),
             payload.count >= 5,
             let packetType = payload.first,
             packetType == V5PacketType.commandResponse || packetType == V5PacketType.puffinCommandResponse,

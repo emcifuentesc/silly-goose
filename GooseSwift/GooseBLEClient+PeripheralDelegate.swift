@@ -144,8 +144,8 @@ extension GooseBLEClient: CBPeripheralDelegate {
       return false
     }
 
-    for frame in Self.v5Frames(in: value) {
-      guard let payload = Self.v5Payload(in: frame),
+    for frame in Self.frames(in: value, for: characteristic) {
+      guard let payload = Self.payload(in: frame, for: characteristic),
             let packetType = payload.first else {
         continue
       }

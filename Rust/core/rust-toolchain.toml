@@ -1,0 +1,6 @@
+# Pin the Goose Rust core to its MSRV (matches `rust-version` in Cargo.toml) so `cargo`
+# and the Xcode "build_ios_rust.sh" build phase select a compatible toolchain automatically,
+# regardless of the machine's default `rustc`. Includes the host + iOS device/simulator targets.
+[toolchain]
+channel = "1.94"
+targets = ["aarch64-apple-darwin", "aarch64-apple-ios", "aarch64-apple-ios-sim"]

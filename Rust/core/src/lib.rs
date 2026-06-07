@@ -16,6 +16,7 @@ pub mod energy_rollup;
 mod error;
 pub mod export;
 pub mod fixtures;
+pub mod gen4;
 pub mod health_sync;
 pub mod historical_sync;
 pub mod local_health_validation;

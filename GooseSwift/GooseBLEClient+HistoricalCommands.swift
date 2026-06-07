@@ -84,11 +84,17 @@ extension GooseBLEClient {
       return
     }
 
-    let commandPayload = kind == .historicalDataResult
-      ? pendingHistoryEndAckPayload ?? kind.payload
-      : kind.payload
+    let commandPayload: [UInt8]
+    if kind == .historicalDataResult {
+      commandPayload = pendingHistoryEndAckPayload ?? kind.payload
+    } else if kind == .sendHistoricalData, activeDeviceGeneration == .gen4 {
+      // WHOOP 4.0 expects a single zero byte for SEND_HISTORICAL_DATA (v5 sends an empty payload).
+      commandPayload = [0x00]
+    } else {
+      commandPayload = kind.payload
+    }
     let sequence = nextHistoricalSequence()
-    let frame = Self.buildV5CommandFrame(
+    let frame = buildCommandFrame(
       sequence: sequence,
       command: kind.commandNumber,
       data: commandPayload

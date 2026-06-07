@@ -79,7 +79,7 @@ extension GooseBLEClient {
     }
 
     let sequence = nextDebugSequence()
-    let frame = Self.buildV5CommandFrame(
+    let frame = buildCommandFrame(
       sequence: sequence,
       command: definition.commandNumber,
       data: payload
@@ -224,6 +224,70 @@ extension GooseBLEClient {
       title: "hello.sent",
       body: "reason=\(reason) \(commandCharacteristic.uuid.uuidString) \(writeTypeName(writeType)) \(GooseHello.clientHelloFrameHex)"
     )
+  }
+
+  /// Generation-aware connect handshake. Gen5 sends the prebuilt CLIENT_HELLO; Gen4 sends its own
+  /// hello + a clock set (a valid RTC is required before WHOOP 4.0 will offload historical data).
+  func sendConnectHandshakeIfNeeded(reason: String) {
+    switch activeDeviceGeneration {
+    case .gen5:
+      sendClientHelloIfNeeded(reason: reason)
+    case .gen4:
+      sendGen4Handshake(reason: reason)
+    }
+  }
+
+  /// WHOOP 4.0 connect handshake (mirrors my-whoop): identify (`GET_HELLO_HARVARD`), set a valid
+  /// RTC (`SET_CLOCK` — required before historical offload), read it back (`GET_CLOCK`), and stop
+  /// the realtime raw flood (`SEND_R10_R11_REALTIME` off). `GET_DATA_RANGE` + `SEND_HISTORICAL_DATA`
+  /// are driven by the automatic historical sync once the connection is ready. Idempotent per
+  /// connection via the shared `clientHelloSentForCurrentConnection` guard.
+  func sendGen4Handshake(reason: String) {
+    guard !clientHelloSentForCurrentConnection else {
+      record(level: .debug, source: "ble.gen4", title: "gen4.handshake.skipped", body: "already sent reason=\(reason)")
+      return
+    }
+    guard let activePeripheral, let commandCharacteristic else {
+      updateConnectionState("hello blocked")
+      record(level: .warn, source: "ble.gen4", title: "gen4.handshake.blocked", body: "missing active peripheral or command characteristic")
+      return
+    }
+    guard let writeType = writeType(for: commandCharacteristic) else {
+      updateConnectionState("hello blocked")
+      record(level: .warn, source: "ble.gen4", title: "gen4.handshake.blocked", body: "Command characteristic is not writable")
+      return
+    }
+
+    let commands: [(name: String, number: UInt8, payload: [UInt8])] = [
+      ("GET_HELLO_HARVARD", 35, [0x00]),
+      ("SET_CLOCK", 10, ClockCommandKind.set(Date()).payload),
+      ("GET_CLOCK", 11, []),
+      ("SEND_R10_R11_REALTIME_OFF", 63, [0x00]),
+    ]
+    var sequence: UInt8 = 1
+    for command in commands {
+      let frame = buildCommandFrame(sequence: sequence, command: command.number, data: command.payload)
+      activePeripheral.writeValue(frame, for: commandCharacteristic, type: writeType)
+      emitCommandWrite(
+        source: "ble.gen4",
+        commandName: command.name,
+        commandNumber: command.number,
+        sequence: sequence,
+        payload: Data(command.payload),
+        frame: frame,
+        peripheral: activePeripheral,
+        characteristic: commandCharacteristic,
+        writeType: writeType
+      )
+      record(
+        source: "ble.gen4",
+        title: "gen4.handshake.command.sent",
+        body: "\(command.name) seq=\(sequence) \(writeTypeName(writeType)) \(frame.hexString)"
+      )
+      sequence &+= 1
+    }
+    clientHelloSentForCurrentConnection = true
+    record(source: "ble.gen4", title: "gen4.handshake.sent", body: "reason=\(reason) \(commandCharacteristic.uuid.uuidString)")
   }
 
   func syncHistoricalPackets(rangeFirst: Bool = false) {

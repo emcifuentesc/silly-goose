@@ -144,21 +144,24 @@ extension GooseBLEClient {
     }
   }
 
-  var supportsV5HistoricalSync: Bool {
-    commandCharacteristic.map(isV5CommandCharacteristic) == true
+  /// True when a recognized strap command characteristic is assigned — from EITHER GATT family
+  /// (`fd4b0002` for Gen5 or `61080002` for Gen4). Command numbers/payloads are shared across
+  /// generations; `buildCommandFrame` selects the right envelope. The `supportsV5*` names are
+  /// kept for call-site stability but now mean "supports strap commands for this generation".
+  var canSendStrapCommands: Bool {
+    guard let characteristic = commandCharacteristic else {
+      return false
+    }
+    return commandCharacteristicIDs.contains(characteristic.uuid)
   }
 
-  var supportsV5AlarmCommands: Bool {
-    commandCharacteristic.map(isV5CommandCharacteristic) == true
-  }
+  var supportsV5HistoricalSync: Bool { canSendStrapCommands }
 
-  var supportsV5ClockCommands: Bool {
-    commandCharacteristic.map(isV5CommandCharacteristic) == true
-  }
+  var supportsV5AlarmCommands: Bool { canSendStrapCommands }
 
-  var supportsV5SensorCommands: Bool {
-    commandCharacteristic.map(isV5CommandCharacteristic) == true
-  }
+  var supportsV5ClockCommands: Bool { canSendStrapCommands }
+
+  var supportsV5SensorCommands: Bool { canSendStrapCommands }
 
   func isV5CommandCharacteristic(_ characteristic: CBCharacteristic) -> Bool {
     characteristic.uuid.uuidString.lowercased().hasPrefix("fd4b0002")
@@ -216,7 +219,7 @@ extension GooseBLEClient {
     }
 
     let sequence = nextClockSequence()
-    let frame = Self.buildV5CommandFrame(
+    let frame = buildCommandFrame(
       sequence: sequence,
       command: kind.commandNumber,
       data: kind.payload
@@ -311,7 +314,7 @@ extension GooseBLEClient {
     }
 
     let sequence = nextAlarmSequence()
-    let frame = Self.buildV5CommandFrame(
+    let frame = buildCommandFrame(
       sequence: sequence,
       command: kind.commandNumber,
       data: kind.payload
@@ -438,7 +441,7 @@ extension GooseBLEClient {
   ) {
     let sequence = nextSensorCommandSequence
     nextSensorCommandSequence = nextSensorCommandSequence == UInt8.max ? 180 : nextSensorCommandSequence + 1
-    let frame = Self.buildV5CommandFrame(
+    let frame = buildCommandFrame(
       sequence: sequence,
       command: command.commandNumber,
       data: command.payload
@@ -888,7 +891,7 @@ extension GooseBLEClient {
 
     if commandCharacteristic != nil {
       updateConnectionState("ready")
-      sendClientHelloIfNeeded(reason: cached ? "cached_gatt" : "gatt_discovery")
+      sendConnectHandshakeIfNeeded(reason: cached ? "cached_gatt" : "gatt_discovery")
       scheduleDebugSkinTemperatureCommandIfNeeded(reason: cached ? "cached_ready" : "ready")
       scheduleAutomaticHistoricalSyncIfNeeded()
       scheduleAutomaticPhysiologyCaptureIfNeeded()

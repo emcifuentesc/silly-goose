@@ -959,3 +959,147 @@ extension GooseBLEClient {
     return ~crc
   }
 }
+
+/// WHOOP device generation, inferred from the GATT family of the characteristic in play.
+///
+/// Gen4 (WHOOP 4.0) speaks the shared `6108…` service with a **4-byte** frame header
+/// (`[0xAA][len u16 LE][crc8]`). Gen5 (Goose / WHOOP 5.0) uses the `fd4b…` family with an
+/// **8-byte** header. The two reassemble and frame commands differently, so every frame /
+/// command path that previously assumed v5 dispatches on this.
+enum DeviceGeneration {
+  case gen4
+  case gen5
+}
+
+extension GooseBLEClient {
+  /// Infer the generation from a characteristic's UUID family (`6108…` ⇒ Gen4, else Gen5).
+  static func generation(for characteristic: CBCharacteristic) -> DeviceGeneration {
+    characteristic.uuid.uuidString.lowercased().hasPrefix("6108") ? .gen4 : .gen5
+  }
+
+  /// The connected device's generation, inferred from the assigned command characteristic.
+  /// Defaults to `.gen5` until one is known, preserving existing v5 behavior.
+  var activeDeviceGeneration: DeviceGeneration {
+    guard let commandCharacteristic else { return .gen5 }
+    return Self.generation(for: commandCharacteristic)
+  }
+
+  // MARK: - Generation-aware frame reassembly
+
+  /// Split a notification's bytes into complete frames using the framing for `characteristic`'s family.
+  static func frames(in data: Data, for characteristic: CBCharacteristic) -> [Data] {
+    switch generation(for: characteristic) {
+    case .gen5: return v5Frames(in: data)
+    case .gen4: return gen4Frames(in: data)
+    }
+  }
+
+  /// Extract the inner payload (`[type, seq, cmd, data…]`) from a complete frame.
+  static func payload(in frame: Data, for characteristic: CBCharacteristic) -> [UInt8]? {
+    switch generation(for: characteristic) {
+    case .gen5: return v5Payload(in: frame)
+    case .gen4: return gen4Payload(in: frame)
+    }
+  }
+
+  /// Build a strap command frame using the framing for the connected device's generation
+  /// (8-byte v5 header for Gen5, 4-byte header for Gen4). The command numbers and payloads are
+  /// shared across generations; only the envelope differs.
+  func buildCommandFrame(sequence: UInt8, command: UInt8, data: [UInt8]) -> Data {
+    switch activeDeviceGeneration {
+    case .gen5: return Self.buildV5CommandFrame(sequence: sequence, command: command, data: data)
+    case .gen4: return Self.buildGen4CommandFrame(sequence: sequence, command: command, data: data)
+    }
+  }
+
+  // MARK: - Gen4 (WHOOP 4.0) framing
+  // Frame: [0xAA][len u16 LE][crc8(len)][type][seq][cmd][data…][crc32 LE]. `len` is the value of
+  // the 2-byte length field; total frame length = len + 4. crc32 covers the bytes from the type
+  // byte through the last data byte. Mirrors the my-whoop 4.0 reference and the Rust core's Gen4 path.
+
+  /// Reassemble complete Gen4 frames from a (possibly fragmented, possibly multi-frame) buffer.
+  /// Mirrors `v5Frames` with the 4-byte header (total length = declared length + 4).
+  static func gen4Frames(in data: Data) -> [Data] {
+    var bytes = Array(data)
+    var frames: [Data] = []
+    while let startIndex = bytes.firstIndex(of: 0xaa) {
+      if startIndex > 0 {
+        bytes.removeFirst(startIndex)
+      }
+      guard bytes.count >= 4 else {
+        break
+      }
+      let declaredLength = Int(UInt16(bytes[1]) | UInt16(bytes[2]) << 8)
+      guard declaredLength >= 4 else {
+        bytes.removeFirst()
+        continue
+      }
+      let expectedLength = declaredLength + 4
+      guard bytes.count >= expectedLength else {
+        break
+      }
+      frames.append(Data(bytes[0..<expectedLength]))
+      bytes.removeFirst(expectedLength)
+    }
+    return frames
+  }
+
+  /// Extract the Gen4 payload `[type, seq, cmd, data…]` (frame bytes 4 ..< len-4).
+  static func gen4Payload(in frame: Data) -> [UInt8]? {
+    let bytes = Array(frame)
+    guard bytes.count >= 8 else {
+      return nil
+    }
+    let declaredLength = Int(UInt16(bytes[1]) | UInt16(bytes[2]) << 8)
+    let expectedLength = declaredLength + 4
+    guard bytes.count == expectedLength, declaredLength >= 4 else {
+      return nil
+    }
+    return Array(bytes[4..<(bytes.count - 4)])
+  }
+
+  // MARK: - Gen4 command framing
+
+  /// Build a Gen4 command frame: `[0xAA][len u16 LE][crc8(len)][35][seq][cmd][data…][crc32 LE]`,
+  /// where `len` = payload byte count + 4 and crc32 covers `[35, seq, cmd, data…]`. Mirrors the
+  /// my-whoop WHOOP 4.0 command builder; unlike `buildV5CommandFrame` there is no payload padding.
+  static func buildGen4CommandFrame(sequence: UInt8, command: UInt8, data: [UInt8]) -> Data {
+    var payload: [UInt8] = [V5PacketType.command, sequence, command]
+    payload.append(contentsOf: data)
+
+    let declaredLength = UInt16(payload.count + 4)
+    let lengthBytes: [UInt8] = [
+      UInt8(declaredLength & 0xff),
+      UInt8((declaredLength >> 8) & 0xff),
+    ]
+
+    var frame: [UInt8] = [0xaa]
+    frame.append(contentsOf: lengthBytes)
+    frame.append(crc8(lengthBytes))
+    frame.append(contentsOf: payload)
+
+    let payloadCRC = crc32(payload)
+    frame.append(UInt8(payloadCRC & 0xff))
+    frame.append(UInt8((payloadCRC >> 8) & 0xff))
+    frame.append(UInt8((payloadCRC >> 16) & 0xff))
+    frame.append(UInt8((payloadCRC >> 24) & 0xff))
+    return Data(frame)
+  }
+
+  /// CRC-8 (polynomial 0x07) over the given bytes — the Gen4 header checksum (matches the Rust
+  /// core's `crc8` and my-whoop's `crc8`).
+  static func crc8(_ bytes: [UInt8]) -> UInt8 {
+    var crc: UInt8 = 0
+    for byte in bytes {
+      crc ^= byte
+      for _ in 0..<8 {
+        if crc & 0x80 != 0 {
+          crc = (crc << 1) ^ 0x07
+        } else {
+          crc <<= 1
+        }
+      }
+    }
+    return crc
+  }
+}

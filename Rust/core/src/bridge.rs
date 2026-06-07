@@ -213,6 +213,26 @@ struct ParseFrameBatchArgs {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+struct Gen4DecodeArgs {
+    frame_hex: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Gen4DecodeBatchArgs {
+    frames: Vec<String>,
+}
+
+/// Gen4 stream extraction inputs. `device_clock_ref`/`wall_clock_ref` are the GET_CLOCK
+/// device epoch and the wall-clock unix at that response (see the 4.0 connect/sync flow);
+/// they are only used to map device-epoch timestamps on REALTIME frames to wall time.
+#[derive(Debug, Clone, Deserialize)]
+struct Gen4StreamArgs {
+    frames: Vec<String>,
+    device_clock_ref: i64,
+    wall_clock_ref: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct TimelineArgs {
     decoded_frames: Vec<DecodedFrameRow>,
 }
@@ -2462,6 +2482,22 @@ fn handle_bridge_request_inner(request: BridgeRequest) -> BridgeResponse {
             .and_then(parse_frame_hex_batch_bridge)
             .map(|value| bridge_ok(&request.request_id, value))
             .unwrap_or_else(|error| bridge_error(&request.request_id, "method_error", error)),
+        "gen4.decode_frame_hex" => request_args::<Gen4DecodeArgs>(&request)
+            .and_then(gen4_decode_frame_bridge)
+            .map(|value| bridge_ok(&request.request_id, value))
+            .unwrap_or_else(|error| bridge_error(&request.request_id, "method_error", error)),
+        "gen4.decode_frame_hex_batch" => request_args::<Gen4DecodeBatchArgs>(&request)
+            .and_then(gen4_decode_frame_batch_bridge)
+            .map(|value| bridge_ok(&request.request_id, value))
+            .unwrap_or_else(|error| bridge_error(&request.request_id, "method_error", error)),
+        "gen4.extract_streams" => request_args::<Gen4StreamArgs>(&request)
+            .and_then(gen4_extract_streams_bridge)
+            .map(|value| bridge_ok(&request.request_id, value))
+            .unwrap_or_else(|error| bridge_error(&request.request_id, "method_error", error)),
+        "gen4.extract_historical_streams" => request_args::<Gen4StreamArgs>(&request)
+            .and_then(gen4_extract_historical_streams_bridge)
+            .map(|value| bridge_ok(&request.request_id, value))
+            .unwrap_or_else(|error| bridge_error(&request.request_id, "method_error", error)),
         "timeline.from_decoded_frames" => request_args::<TimelineArgs>(&request)
             .and_then(timeline_from_decoded_frames_bridge)
             .map(|value| bridge_ok(&request.request_id, value))
@@ -2564,6 +2600,44 @@ fn parse_frame_hex_batch_bridge(args: ParseFrameBatchArgs) -> GooseResult<serde_
         "frame_count": args.frames.len(),
         "results": results,
     }))
+}
+
+fn gen4_decode_frame_bridge(args: Gen4DecodeArgs) -> GooseResult<serde_json::Value> {
+    let frame = crate::gen4::decode_frame_hex(&args.frame_hex)?;
+    serde_json::to_value(frame)
+        .map_err(|error| GooseError::message(format!("cannot serialize gen4 frame: {error}")))
+}
+
+fn gen4_decode_frame_batch_bridge(args: Gen4DecodeBatchArgs) -> GooseResult<serde_json::Value> {
+    let mut results = Vec::with_capacity(args.frames.len());
+    for (index, frame_hex) in args.frames.iter().enumerate() {
+        match crate::gen4::decode_frame_hex(frame_hex) {
+            Ok(frame) => results.push(json!({ "index": index, "ok": true, "result": frame })),
+            Err(error) => {
+                results.push(json!({ "index": index, "ok": false, "error": error.to_string() }))
+            }
+        }
+    }
+    Ok(json!({ "frame_count": args.frames.len(), "results": results }))
+}
+
+fn gen4_decode_frames(frames: &[String]) -> GooseResult<Vec<crate::gen4::Gen4Frame>> {
+    frames.iter().map(|hex| crate::gen4::decode_frame_hex(hex)).collect()
+}
+
+fn gen4_extract_streams_bridge(args: Gen4StreamArgs) -> GooseResult<serde_json::Value> {
+    let frames = gen4_decode_frames(&args.frames)?;
+    let streams = crate::gen4::extract_streams(&frames, args.device_clock_ref, args.wall_clock_ref);
+    serde_json::to_value(streams)
+        .map_err(|error| GooseError::message(format!("cannot serialize gen4 streams: {error}")))
+}
+
+fn gen4_extract_historical_streams_bridge(args: Gen4StreamArgs) -> GooseResult<serde_json::Value> {
+    let frames = gen4_decode_frames(&args.frames)?;
+    let streams =
+        crate::gen4::extract_historical_streams(&frames, args.device_clock_ref, args.wall_clock_ref);
+    serde_json::to_value(streams)
+        .map_err(|error| GooseError::message(format!("cannot serialize gen4 streams: {error}")))
 }
 
 fn compact_parsed_frame_summary(parsed: &ParsedFrame) -> serde_json::Value {
@@ -7556,7 +7630,9 @@ where
 
 fn parse_device_type(value: &str) -> GooseResult<DeviceType> {
     match value {
-        "GEN_4" | "Gen4" | "gen4" => Ok(DeviceType::Gen4),
+        // "GEN4" is what serde's SCREAMING_SNAKE_CASE and the Swift app emit; "GEN_4" matches
+        // `device_type_name`. Accept all spellings so Gen4 frames don't error at the bridge.
+        "GEN4" | "GEN_4" | "Gen4" | "gen4" => Ok(DeviceType::Gen4),
         "MAVERICK" | "Maverick" | "maverick" => Ok(DeviceType::Maverick),
         "PUFFIN" | "Puffin" | "puffin" => Ok(DeviceType::Puffin),
         "GOOSE" | "Goose" | "goose" => Ok(DeviceType::Goose),
