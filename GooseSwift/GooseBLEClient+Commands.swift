@@ -901,6 +901,12 @@ extension GooseBLEClient {
   }
 
   func scheduleAutomaticPhysiologyCaptureIfNeeded() {
+    // Don't auto-start the raw IMU/optical flood on WHOOP 4.0: it fights the connect handshake's
+    // stop-flood, saturates the data characteristic, and competes with historical offload. Manual
+    // physiology capture remains available; this only suppresses the automatic on-connect start.
+    guard activeDeviceGeneration == .gen5 else {
+      return
+    }
     guard autoStartPhysiologyCaptureOnReady,
           !autoStartedPhysiologyCapture,
           connectionState == "ready",

@@ -38,11 +38,14 @@ extension GooseAppModel {
 
     let event = result.event
     if result.droppedBytes > 0 {
+      // A drop that ends with buffered==0 just skipped non-frame bytes (e.g. the strap's small
+      // periodic non-0xAA status packets on the data characteristic) — benign, log at debug. A
+      // drop with buffered>0 left a dangling partial frame = a genuine desync — keep it a warning.
       ble.record(
-        level: .warn,
+        level: result.bufferedBytes > 0 ? .warn : .debug,
         source: "rust",
         title: "notification.frame.reassembly.dropped",
-        body: "\(event.characteristicUUID) dropped=\(result.droppedBytes) buffered=\(result.bufferedBytes)"
+        body: "\(event.characteristicUUID) dropped=\(result.droppedBytes) buffered=\(result.bufferedBytes) hex=\(result.droppedHex)"
       )
     }
     if result.usedBufferedData && !result.frames.isEmpty {
@@ -97,11 +100,14 @@ extension GooseAppModel {
 
     let event = result.event
     if result.droppedBytes > 0 {
+      // A drop that ends with buffered==0 just skipped non-frame bytes (e.g. the strap's small
+      // periodic non-0xAA status packets on the data characteristic) — benign, log at debug. A
+      // drop with buffered>0 left a dangling partial frame = a genuine desync — keep it a warning.
       ble.record(
-        level: .warn,
+        level: result.bufferedBytes > 0 ? .warn : .debug,
         source: "rust",
         title: "notification.frame.reassembly.dropped",
-        body: "\(event.characteristicUUID) dropped=\(result.droppedBytes) buffered=\(result.bufferedBytes)"
+        body: "\(event.characteristicUUID) dropped=\(result.droppedBytes) buffered=\(result.bufferedBytes) hex=\(result.droppedHex)"
       )
     }
     if result.usedBufferedData && !result.frames.isEmpty {
@@ -127,11 +133,14 @@ extension GooseAppModel {
 
     let event = result.event
     if result.droppedBytes > 0 {
+      // A drop that ends with buffered==0 just skipped non-frame bytes (e.g. the strap's small
+      // periodic non-0xAA status packets on the data characteristic) — benign, log at debug. A
+      // drop with buffered>0 left a dangling partial frame = a genuine desync — keep it a warning.
       ble.record(
-        level: .warn,
+        level: result.bufferedBytes > 0 ? .warn : .debug,
         source: "rust",
         title: "notification.frame.reassembly.dropped",
-        body: "\(event.characteristicUUID) dropped=\(result.droppedBytes) buffered=\(result.bufferedBytes)"
+        body: "\(event.characteristicUUID) dropped=\(result.droppedBytes) buffered=\(result.bufferedBytes) hex=\(result.droppedHex)"
       )
       if result.bufferedBytes == 0 {
         return
@@ -687,6 +696,7 @@ extension GooseAppModel {
     let expectedBytes: Int?
     let droppedBytes: Int
     let usedBufferedData: Bool
+    let droppedHex: String
   }
 
   func notificationIngestResult(for event: GooseNotificationEvent) -> NotificationIngestResult {
@@ -697,7 +707,8 @@ extension GooseAppModel {
       bufferedBytes: reassembly.bufferedBytes,
       expectedBytes: reassembly.expectedBytes,
       droppedBytes: reassembly.droppedBytes,
-      usedBufferedData: reassembly.usedBufferedData
+      usedBufferedData: reassembly.usedBufferedData,
+      droppedHex: reassembly.droppedHex
     )
   }
 
@@ -766,6 +777,8 @@ extension GooseAppModel {
     let expectedBytes: Int?
     let droppedBytes: Int
     let usedBufferedData: Bool
+    /// Hex of the bytes that were skipped (capped) — diagnostic for why reassembly dropped.
+    let droppedHex: String
   }
 
   func gooseFrames(in data: Data, event: GooseNotificationEvent) -> FrameReassemblyResult {
@@ -775,12 +788,14 @@ extension GooseAppModel {
     bytes.append(contentsOf: data)
     var frames: [Data] = []
     var droppedBytes = 0
+    var droppedData: [UInt8] = []
     var expectedBytes: Int?
     let headerLength = event.rustDeviceType == "GEN4" ? 4 : 8
 
     while let startIndex = bytes.firstIndex(of: 0xaa) {
       if startIndex > 0 {
         droppedBytes += startIndex
+        droppedData.append(contentsOf: bytes[0..<startIndex])
         bytes.removeFirst(startIndex)
       }
       guard bytes.count >= headerLength else {
@@ -796,6 +811,7 @@ extension GooseAppModel {
       guard declaredLength >= 4,
             declaredLength + headerLength <= Self.maximumBufferedFrameBytes else {
         droppedBytes += 1
+        droppedData.append(bytes[0])
         bytes.removeFirst()
         continue
       }
@@ -815,6 +831,7 @@ extension GooseAppModel {
       frameReassemblyBuffers[key] = Data(bytes)
     } else {
       droppedBytes += bytes.count
+      droppedData.append(contentsOf: bytes)
       frameReassemblyBuffers.removeValue(forKey: key)
     }
 
@@ -823,7 +840,8 @@ extension GooseAppModel {
       bufferedBytes: frameReassemblyBuffers[key]?.count ?? 0,
       expectedBytes: expectedBytes,
       droppedBytes: droppedBytes,
-      usedBufferedData: hadBufferedData
+      usedBufferedData: hadBufferedData,
+      droppedHex: Data(droppedData.prefix(48)).hexString
     )
   }
 

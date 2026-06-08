@@ -23,6 +23,7 @@ extension GooseBLEClient {
     case V5PacketType.commandResponse, V5PacketType.puffinCommandResponse:
       handleHistoricalCommandResponse(payload)
     case V5PacketType.historicalData, V5PacketType.historicalIMUDataStream:
+      clearPendingTransferOnStreamStart()
       historicalPacketsReceivedThisSync += 1
       publishHistoricalPacketCountIfNeeded()
       scheduleHistoricalIdleCompletion(reason: "historical_data_idle")
@@ -39,10 +40,32 @@ extension GooseBLEClient {
         body: "\(characteristic.uuid.uuidString) count=\(historicalPacketsReceivedThisSync)"
       )
     case V5PacketType.metadata, V5PacketType.puffinMetadata:
+      clearPendingTransferOnStreamStart()
       handleHistoricalMetadata(payload)
     default:
       break
     }
+  }
+
+  /// Once the offload stream begins (HISTORY_START or any historical/metadata frame), treat that as
+  /// the response to SEND_HISTORICAL_DATA: clear the pending command + cancel its response timeout
+  /// so the idle watchdog governs completion. WHOOP 4.0 never acks SEND_HISTORICAL_DATA with a
+  /// COMMAND_RESPONSE (v5 does), so without this the sync fails its command-response timeout even
+  /// while historical data is actively arriving. No-op for v5 (its COMMAND_RESPONSE already cleared
+  /// the pending command first).
+  func clearPendingTransferOnStreamStart() {
+    guard let pending = pendingHistoricalCommand, pending.kind == .sendHistoricalData else {
+      return
+    }
+    historicalCommandTimeoutWorkItem?.cancel()
+    pendingHistoricalCommand = nil
+    scheduleHistoricalIdleCompletion(reason: "transfer_stream_started")
+    record(
+      level: .debug,
+      source: "ble.sync",
+      title: "historical_sync.transfer.stream_started",
+      body: "cleared pending SEND_HISTORICAL_DATA seq=\(pending.sequence) on stream start"
+    )
   }
 
   func publishHistoricalPacketCountIfNeeded(force: Bool = false, at date: Date = Date()) {
@@ -146,6 +169,20 @@ extension GooseBLEClient {
             let packetType = payload.first,
             packetType == V5PacketType.commandResponse || packetType == V5PacketType.puffinCommandResponse,
             payload[2] == 10 || payload[2] == 11 else {
+        // Diagnostic: while a clock command is pending, surface any command-response frame we
+        // saw but didn't route, so we can confirm the Gen4 COMMAND_RESPONSE layout (where the
+        // echoed sequence / result bytes live) and fix correlation precisely.
+        if pendingClockCommand != nil,
+           let payload = Self.payload(in: frame, for: characteristic),
+           let packetType = payload.first,
+           packetType == V5PacketType.commandResponse || packetType == V5PacketType.puffinCommandResponse {
+          record(
+            level: .info,
+            source: "ble.clock",
+            title: "clock.response.raw",
+            body: "gen=\(activeDeviceGeneration) seq_field=\(payload.count > 1 ? payload[1] : 0) payload=\(Data(payload).hexString)"
+          )
+        }
         continue
       }
       handleClockCommandResponse(payload)
@@ -157,12 +194,12 @@ extension GooseBLEClient {
       return
     }
     guard let pending = pendingClockCommand else {
-      record(level: .debug, source: "ble.clock", title: "clock.response.unmatched", body: "no pending command payload=\(Data(payload).hexString)")
+      record(level: .info, source: "ble.clock", title: "clock.response.unmatched", body: "no pending command payload=\(Data(payload).hexString)")
       return
     }
     guard payload[2] == pending.kind.commandNumber,
           payload[3] == pending.sequence else {
-      record(level: .debug, source: "ble.clock", title: "clock.response.ignored", body: "pending=\(pending.kind.name) seq=\(pending.sequence) payload=\(Data(payload).hexString)")
+      record(level: .info, source: "ble.clock", title: "clock.response.ignored", body: "pending=\(pending.kind.name) seq=\(pending.sequence) payload=\(Data(payload).hexString)")
       return
     }
 

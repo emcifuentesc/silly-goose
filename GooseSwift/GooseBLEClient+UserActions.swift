@@ -258,12 +258,18 @@ extension GooseBLEClient {
       return
     }
 
-    let commands: [(name: String, number: UInt8, payload: [UInt8])] = [
+    var commands: [(name: String, number: UInt8, payload: [UInt8])] = [
       ("GET_HELLO_HARVARD", 35, [0x00]),
       ("SET_CLOCK", 10, ClockCommandKind.set(Date()).payload),
       ("GET_CLOCK", 11, []),
-      ("SEND_R10_R11_REALTIME_OFF", 63, [0x00]),
     ]
+    // Quiet any raw IMU/optical streaming the strap may still have enabled. WHOOP 4.0's raw modes
+    // (incl. the persistent R20/R21 toggles) survive reconnect, so a prior capture leaves the strap
+    // firehosing ~1.9 KB type-43 frames on the data characteristic — swamping frame reassembly
+    // (the `reassembly.dropped` noise) and competing with historical offload. Send the full OFF set.
+    for stop in SensorStreamCommandKind.stopPhysiologyCapture {
+      commands.append((stop.name, stop.commandNumber, stop.payload))
+    }
     var sequence: UInt8 = 1
     for command in commands {
       let frame = buildCommandFrame(sequence: sequence, command: command.number, data: command.payload)
@@ -325,6 +331,11 @@ extension GooseBLEClient {
   }
 
   func startPhysiologySignalCapture() {
+    guard activeDeviceGeneration == .gen5 else {
+      record(level: .info, source: "ui.debug", title: "physiology_capture.start.skipped_gen4",
+             body: "raw IMU/optical capture is disabled for WHOOP 4.0 during bring-up (keeps the channel clear for commands + historical sync)")
+      return
+    }
     record(source: "ui.debug", title: "physiology_capture.start.requested")
     writeSensorStreamCommands(
       SensorStreamCommandKind.startPhysiologyCapture,
@@ -333,6 +344,11 @@ extension GooseBLEClient {
   }
 
   func startMovementHeartRateCapture() {
+    guard activeDeviceGeneration == .gen5 else {
+      record(level: .info, source: "ui.debug", title: "movement_hr_capture.start.skipped_gen4",
+             body: "realtime/movement raw capture is disabled for WHOOP 4.0 during bring-up (keeps the channel clear for commands + historical sync)")
+      return
+    }
     record(source: "ui.debug", title: "movement_hr_capture.start.requested")
     writeSensorStreamCommands(
       SensorStreamCommandKind.startMovementHeartRateCapture,

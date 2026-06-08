@@ -119,7 +119,11 @@ cargo_args=(
 if [[ "$CARGO_RELEASE" == "1" ]]; then
   cargo_args+=(--release)
 fi
-cargo "${cargo_args[@]}"
+# Run cargo from the crate directory so rustup discovers Rust/core/rust-toolchain.toml
+# (toolchain selection keys off the working directory, not --manifest-path). Without this the
+# Xcode build phase's working directory is the project root and cargo falls back to the default
+# toolchain, which fails the crate's rust-version (1.94) requirement.
+(cd "$CORE_DIR" && cargo "${cargo_args[@]}")
 
 mkdir -p "$PLATFORM_RUST_DIR"
 cp "$CARGO_TARGET_DIR/$RUST_TARGET/$CARGO_PROFILE_DIR/libgoose_core.a" \

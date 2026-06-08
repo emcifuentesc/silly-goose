@@ -353,6 +353,13 @@ extension GooseAppModel {
     guard activeHealthPacketCapture?.mode == .walk else {
       return
     }
+    // Raw movement streaming is disabled on WHOOP 4.0 during bring-up, so don't request it and
+    // don't schedule the retry loop (which would otherwise spin as no-op `stream.requested` spam).
+    guard ble.activeDeviceGeneration == .gen5 else {
+      ble.record(level: .info, source: "health.packet_capture", title: "stream.skipped_gen4",
+                 body: "movement stream disabled for WHOOP 4.0 during bring-up (reason=\(reason))")
+      return
+    }
 
     ble.record(source: "health.packet_capture", title: "stream.requested", body: reason)
     ble.startMovementHeartRateCapture()

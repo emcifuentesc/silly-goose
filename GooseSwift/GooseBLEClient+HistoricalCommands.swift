@@ -58,7 +58,16 @@ extension GooseBLEClient {
       ? "Polling historical range"
       : (automatic ? "Requesting missed packets" : "Requesting historical packets")
     publishSyncToast(phase: .syncing, detail: toastDetail)
-    let firstCommand = firstCommandOverride ?? (requestHistoricalRangeBeforeTransfer ? .getDataRange : .sendHistoricalData)
+    // WHOOP 4.0 does not return the v5 paged "final range" response, so the range-poll just times
+    // out and fails the sync. Gen4 (like my-whoop) drives the offload straight from
+    // SEND_HISTORICAL_DATA → HISTORY_START/data/END; the range poll is a v5-only precursor.
+    let useRangePoll = requestHistoricalRangeBeforeTransfer && activeDeviceGeneration == .gen5
+    var firstCommand = firstCommandOverride ?? (useRangePoll ? .getDataRange : .sendHistoricalData)
+    // Several callers pass `firstCommandOverride: .getDataRange` (rangeFirst). On Gen4 that hangs,
+    // so for any real transfer (not an explicit range-only poll) lead with SEND_HISTORICAL_DATA.
+    if activeDeviceGeneration == .gen4, firstCommand == .getDataRange, !rangeOnly {
+      firstCommand = .sendHistoricalData
+    }
     if firstCommand == .getDataRange {
       updateHistoricalRangeDebugStatus("started trigger=\(trigger) first=GET_DATA_RANGE")
     }
