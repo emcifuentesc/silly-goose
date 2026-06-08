@@ -387,6 +387,14 @@ extension GooseBLEClient {
   }
 
   func retryHistoricalTransferAfterIdleIfNeeded(reason: String) -> Bool {
+    // WHOOP 4.0 streams historical bodies through the main capture pipeline, so the sync's own
+    // `historicalPacketsReceivedThisSync` stays 0 even on a fully successful offload (its stateless
+    // reassembler can't rejoin MTU-fragmented frames). The retry also leads with GET_DATA_RANGE,
+    // which Gen4 never answers. So for Gen4 never run this metadata-only retry — `HistoryComplete`
+    // is the strap's authoritative "done" signal; let the idle handler complete the sync instead.
+    if activeDeviceGeneration == .gen4 {
+      return false
+    }
     guard !historicalRangePollOnly,
           historicalPacketsReceivedThisSync == 0 else {
       return false
