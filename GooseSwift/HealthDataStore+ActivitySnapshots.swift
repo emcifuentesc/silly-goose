@@ -366,6 +366,20 @@ extension HealthDataStore {
   }
 
   func strainSnapshot(base snapshot: HealthMetricSnapshot) -> HealthMetricSnapshot {
+    if gen4IsActive, let rawScore = gen4StrainScore {
+      let pct = Self.strainPercent(rawScore)
+      let scoreText = Self.numberText(pct, fractionDigits: 0) ?? "--"
+      return replacingHealthMonitorSnapshot(
+        snapshot,
+        value: scoreText,
+        unit: "",
+        status: Self.strainStatusLabel(score: pct),
+        freshness: "Latest",
+        provenance: "gen4.strain",
+        source: .bridge("goose.gen4.strain"),
+        trend: Self.emptyTrend(from: snapshot.trend, packetCount: 0)
+      )
+    }
     guard let rawScore = currentStrainScore0To21(),
           let scoreText = Self.numberText(Self.strainPercent(rawScore), fractionDigits: 0) else {
       return zeroStrainSnapshot(

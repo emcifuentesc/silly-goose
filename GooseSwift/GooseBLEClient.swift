@@ -20,6 +20,16 @@ final class GooseBLEClient: NSObject, ObservableObject {
   @Published var liveHRVSource = "waiting"
   @Published var liveHRVUpdatedAt: Date?
   @Published var liveHRVRMSSDSampleCount = 0
+  @Published var gen4StrainScore: Double?
+  @Published var gen4StrainUpdatedAt: Date?
+  @Published var gen4SkinTempDeltaRaw: Double?
+  @Published var gen4SkinTempDeltaCApprox: Double?
+  @Published var gen4SkinTempUpdatedAt: Date?
+  @Published var gen4SleepSessions: [[String: Any]]?
+  @Published var gen4SleepUpdatedAt: Date?
+  @Published var gen4RecoveryScore: Double?
+  @Published var gen4RecoveryComponents: [String: Double]?
+  @Published var gen4RecoveryUpdatedAt: Date?
   @Published var reconnectState = "idle"
   @Published var rememberedDeviceDescription = "none"
   @Published var activeDeviceName = "WHOOP"
@@ -330,6 +340,16 @@ final class GooseBLEClient: NSObject, ObservableObject {
     static let liveHRVRMSSDSampleCount = "goose.swift.liveHRVRMSSDSampleCount"
     static let liveHRVUpdatedAt = "goose.swift.liveHRVUpdatedAt"
     static let liveHRVSource = "goose.swift.liveHRVSource"
+    static let gen4StrainScore = "goose.swift.gen4StrainScore"
+    static let gen4StrainUpdatedAt = "goose.swift.gen4StrainUpdatedAt"
+    static let gen4SkinTempDeltaRaw = "goose.swift.gen4SkinTempDeltaRaw"
+    static let gen4SkinTempDeltaCApprox = "goose.swift.gen4SkinTempDeltaCApprox"
+    static let gen4SkinTempUpdatedAt = "goose.swift.gen4SkinTempUpdatedAt"
+    static let gen4SleepSessionsJson = "goose.swift.gen4SleepSessionsJson"
+    static let gen4SleepUpdatedAt = "goose.swift.gen4SleepUpdatedAt"
+    static let gen4RecoveryScore = "goose.swift.gen4RecoveryScore"
+    static let gen4RecoveryComponentsJson = "goose.swift.gen4RecoveryComponentsJson"
+    static let gen4RecoveryUpdatedAt = "goose.swift.gen4RecoveryUpdatedAt"
     static let debugHistoricalRangeStatus = "goose.swift.debug.historicalRangeStatus"
   }
 
@@ -953,6 +973,10 @@ final class GooseBLEClient: NSObject, ObservableObject {
     loadPersistedBatterySample()
     loadPersistedRestingHeartRateEstimate()
     loadPersistedHRVSample()
+    loadPersistedGen4Strain()
+    loadPersistedGen4SkinTemp()
+    loadPersistedGen4Sleep()
+    loadPersistedGen4Recovery()
     record(source: "app", title: "ble.init", body: "startCentral=\(startCentral)")
     record(
       source: "app",

@@ -46,6 +46,7 @@ extension GooseAppModel {
       overnightGuardFinalSyncDrainWorkItem?.cancel()
       overnightGuardFinalSyncDrainWorkItem = nil
       overnightGuardStartedHealthCapture = false
+      overnightGuardStartedGen4Ppg = false
       overnightGuardTargetCounts = OvernightGuardTargetCounts()
       overnightGuardHistoricalOrder = OvernightGuardHistoricalOrderEvidence()
       overnightGuardPowerWarning = nil
@@ -90,6 +91,16 @@ extension GooseAppModel {
       } else {
         ble.startPhysiologySignalCapture()
       }
+      if ble.activeDeviceGeneration == .gen4 {
+        if ble.isHistoricalSyncing {
+          ble.record(source: "overnight.guard", title: "gen4_ppg.deferred_for_sync",
+                     body: "will start after current historical sync completes")
+        } else {
+          overnightGuardStartedGen4Ppg = true
+          startMovementHeartRateCapture()
+          ble.record(source: "overnight.guard", title: "gen4_ppg.start")
+        }
+      }
       writeOvernightGuardStatus(reason: "started")
       scheduleOvernightGuardHeartbeat()
       scheduleOvernightGuardRangePoll(after: 8, reason: "startup")
@@ -130,6 +141,11 @@ extension GooseAppModel {
       overnightGuardStartedHealthCapture = false
     } else {
       ble.stopPhysiologySignalCapture()
+    }
+    if ble.activeDeviceGeneration == .gen4, overnightGuardStartedGen4Ppg {
+      stopMovementHeartRateCapture()
+      overnightGuardStartedGen4Ppg = false
+      ble.record(source: "overnight.guard", title: "gen4_ppg.stop_for_final_sync")
     }
     ble.record(source: "overnight.guard", title: "final_sync.live_stream_pause_requested")
 
@@ -448,6 +464,12 @@ extension GooseAppModel {
           reason: "failed_startup_retry"
         )
       }
+      if ble.activeDeviceGeneration == .gen4, !overnightGuardStartedGen4Ppg {
+        overnightGuardStartedGen4Ppg = true
+        startMovementHeartRateCapture()
+        ble.record(source: "overnight.guard", title: "gen4_ppg.start_after_sync",
+                   body: "progress=\(progress.status)")
+      }
     }
   }
 
@@ -500,6 +522,11 @@ extension GooseAppModel {
       stopHealthPacketCapture(reason: "overnight_guard_\(reason)")
     } else if stopHealthCapture {
       ble.stopPhysiologySignalCapture()
+    }
+    if stopHealthCapture, ble.activeDeviceGeneration == .gen4, overnightGuardStartedGen4Ppg {
+      stopMovementHeartRateCapture()
+      overnightGuardStartedGen4Ppg = false
+      ble.record(source: "overnight.guard", title: "gen4_ppg.stop", body: "reason=\(reason)")
     }
 
     let endedAt = Date()

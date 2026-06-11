@@ -577,6 +577,74 @@ extension GooseBLEClient {
     defaults.set(source, forKey: DefaultsKey.liveHRVSource)
   }
 
+  func persistGen4Strain(score: Double, capturedAt: Date) {
+    defaults.set(score, forKey: DefaultsKey.gen4StrainScore)
+    defaults.set(capturedAt, forKey: DefaultsKey.gen4StrainUpdatedAt)
+  }
+
+  func loadPersistedGen4Strain() {
+    guard defaults.object(forKey: DefaultsKey.gen4StrainScore) != nil else { return }
+    let score = defaults.double(forKey: DefaultsKey.gen4StrainScore)
+    guard score.isFinite, score >= 0 else { return }
+    gen4StrainScore = score
+    gen4StrainUpdatedAt = defaults.object(forKey: DefaultsKey.gen4StrainUpdatedAt) as? Date
+  }
+
+  func persistGen4SkinTemp(deltaRaw: Double, deltaCApprox: Double, capturedAt: Date) {
+    defaults.set(deltaRaw, forKey: DefaultsKey.gen4SkinTempDeltaRaw)
+    defaults.set(deltaCApprox, forKey: DefaultsKey.gen4SkinTempDeltaCApprox)
+    defaults.set(capturedAt, forKey: DefaultsKey.gen4SkinTempUpdatedAt)
+  }
+
+  func loadPersistedGen4SkinTemp() {
+    guard defaults.object(forKey: DefaultsKey.gen4SkinTempDeltaRaw) != nil else { return }
+    let deltaRaw = defaults.double(forKey: DefaultsKey.gen4SkinTempDeltaRaw)
+    let deltaCApprox = defaults.double(forKey: DefaultsKey.gen4SkinTempDeltaCApprox)
+    guard deltaRaw.isFinite else { return }
+    gen4SkinTempDeltaRaw = deltaRaw
+    gen4SkinTempDeltaCApprox = deltaCApprox
+    gen4SkinTempUpdatedAt = defaults.object(forKey: DefaultsKey.gen4SkinTempUpdatedAt) as? Date
+  }
+
+  func persistGen4Sleep(sessions: [[String: Any]], capturedAt: Date) {
+    guard let data = try? JSONSerialization.data(withJSONObject: sessions) else { return }
+    defaults.set(data, forKey: DefaultsKey.gen4SleepSessionsJson)
+    defaults.set(capturedAt, forKey: DefaultsKey.gen4SleepUpdatedAt)
+    gen4SleepSessions = sessions
+    gen4SleepUpdatedAt = capturedAt
+  }
+
+  func loadPersistedGen4Sleep() {
+    guard let data = defaults.data(forKey: DefaultsKey.gen4SleepSessionsJson),
+          let sessions = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+    else { return }
+    gen4SleepSessions = sessions
+    gen4SleepUpdatedAt = defaults.object(forKey: DefaultsKey.gen4SleepUpdatedAt) as? Date
+  }
+
+  func persistGen4Recovery(score: Double, components: [String: Double], capturedAt: Date) {
+    defaults.set(score, forKey: DefaultsKey.gen4RecoveryScore)
+    if let data = try? JSONSerialization.data(withJSONObject: components) {
+      defaults.set(data, forKey: DefaultsKey.gen4RecoveryComponentsJson)
+    }
+    defaults.set(capturedAt, forKey: DefaultsKey.gen4RecoveryUpdatedAt)
+    gen4RecoveryScore = score
+    gen4RecoveryComponents = components
+    gen4RecoveryUpdatedAt = capturedAt
+  }
+
+  func loadPersistedGen4Recovery() {
+    guard defaults.object(forKey: DefaultsKey.gen4RecoveryScore) != nil else { return }
+    let score = defaults.double(forKey: DefaultsKey.gen4RecoveryScore)
+    guard score > 0 else { return }
+    gen4RecoveryScore = score
+    gen4RecoveryUpdatedAt = defaults.object(forKey: DefaultsKey.gen4RecoveryUpdatedAt) as? Date
+    if let data = defaults.data(forKey: DefaultsKey.gen4RecoveryComponentsJson),
+       let comps = try? JSONSerialization.jsonObject(with: data) as? [String: Double] {
+      gen4RecoveryComponents = comps
+    }
+  }
+
   func persistBatterySample(percent: Int, capturedAt: Date) {
     defaults.set(percent, forKey: DefaultsKey.lastBatteryPercent)
     defaults.set(capturedAt, forKey: DefaultsKey.lastBatteryCapturedAt)

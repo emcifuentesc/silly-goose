@@ -293,6 +293,60 @@ fn default_resting_hr_lookback_s() -> i64 {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+struct Gen4StrainArgs {
+    database_path: String,
+    device_id: String,
+    start_s: i64,
+    end_s: i64,
+    resting_hr_bpm: f64,
+    /// Age-based max HR (220 – age). Falls back to 190 if omitted.
+    #[serde(default = "default_max_hr_bpm")]
+    max_hr_bpm: f64,
+}
+fn default_max_hr_bpm() -> f64 {
+    190.0
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Gen4SkinTempArgs {
+    database_path: String,
+    device_id: String,
+    /// Days of history to use as the personal baseline. Defaults to 30.
+    #[serde(default = "default_skin_temp_baseline_days")]
+    baseline_days: i64,
+}
+fn default_skin_temp_baseline_days() -> i64 {
+    30
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Gen4SleepArgs {
+    database_path: String,
+    device_id: String,
+    /// Seconds of history to search for sleep sessions. Defaults to 48 h.
+    #[serde(default = "default_sleep_lookback_s")]
+    lookback_s: i64,
+}
+fn default_sleep_lookback_s() -> i64 {
+    48 * 3600
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Gen4RecoveryArgs {
+    database_path: String,
+    device_id: String,
+    /// Window to search for the current sleep session. Defaults to 48 h.
+    #[serde(default = "default_sleep_lookback_s")]
+    lookback_s: i64,
+    /// Days of history used for personal baselines. Defaults to 30.
+    #[serde(default = "default_recovery_baseline_days")]
+    baseline_days: i64,
+}
+fn default_recovery_baseline_days() -> i64 {
+    30
+}
+
+#[derive(Debug, Clone, Deserialize)]
 struct Gen4HrvRmssdArgs {
     database_path: String,
     device_id: String,
@@ -2585,12 +2639,28 @@ fn handle_bridge_request_inner(request: BridgeRequest) -> BridgeResponse {
             .and_then(gen4_ingest_ppg_bridge)
             .map(|value| bridge_ok(&request.request_id, value))
             .unwrap_or_else(|error| bridge_error(&request.request_id, "method_error", error)),
+        "gen4.strain" => request_args::<Gen4StrainArgs>(&request)
+            .and_then(gen4_strain_bridge)
+            .map(|value| bridge_ok(&request.request_id, value))
+            .unwrap_or_else(|error| bridge_error(&request.request_id, "method_error", error)),
+        "gen4.skin_temp" => request_args::<Gen4SkinTempArgs>(&request)
+            .and_then(gen4_skin_temp_bridge)
+            .map(|value| bridge_ok(&request.request_id, value))
+            .unwrap_or_else(|error| bridge_error(&request.request_id, "method_error", error)),
         "gen4.resting_hr" => request_args::<Gen4RestingHrArgs>(&request)
             .and_then(gen4_resting_hr_bridge)
             .map(|value| bridge_ok(&request.request_id, value))
             .unwrap_or_else(|error| bridge_error(&request.request_id, "method_error", error)),
         "gen4.hrv_rmssd" => request_args::<Gen4HrvRmssdArgs>(&request)
             .and_then(gen4_hrv_rmssd_bridge)
+            .map(|value| bridge_ok(&request.request_id, value))
+            .unwrap_or_else(|error| bridge_error(&request.request_id, "method_error", error)),
+        "gen4.sleep" => request_args::<Gen4SleepArgs>(&request)
+            .and_then(gen4_sleep_bridge)
+            .map(|value| bridge_ok(&request.request_id, value))
+            .unwrap_or_else(|error| bridge_error(&request.request_id, "method_error", error)),
+        "gen4.recovery" => request_args::<Gen4RecoveryArgs>(&request)
+            .and_then(gen4_recovery_bridge)
             .map(|value| bridge_ok(&request.request_id, value))
             .unwrap_or_else(|error| bridge_error(&request.request_id, "method_error", error)),
         "gen4.spo2_series" => request_args::<Gen4Spo2Args>(&request)
@@ -2884,6 +2954,195 @@ fn gen4_hrv_rmssd_bridge(args: Gen4HrvRmssdArgs) -> GooseResult<serde_json::Valu
             "found": false,
             "rr_count": rr_series.len(),
         })),
+    }
+}
+
+fn gen4_strain_bridge(args: Gen4StrainArgs) -> GooseResult<serde_json::Value> {
+    let store = open_bridge_store(&args.database_path)?;
+    let hr_samples = store.query_gen4_hr_series_with_ts(&args.device_id, args.start_s, args.end_s)?;
+    let pairs: Vec<(i64, i64)> = hr_samples;
+    match crate::gen4::compute_gen4_strain(
+        &pairs,
+        args.resting_hr_bpm,
+        args.max_hr_bpm,
+        args.start_s,
+        args.end_s,
+    ) {
+        Some(result) => Ok(json!({
+            "found": true,
+            "score_0_to_21": result.score_0_to_21,
+            "zone_load": result.zone_load,
+            "duration_minutes": result.duration_minutes,
+            "average_hr_bpm": result.average_hr_bpm,
+            "max_hr_bpm": result.max_hr_bpm,
+            "resting_hr_bpm": result.resting_hr_bpm,
+            "hr_zone_minutes": result.hr_zone_minutes,
+            "sample_count": pairs.len(),
+        })),
+        None => Ok(json!({
+            "found": false,
+            "sample_count": pairs.len(),
+        })),
+    }
+}
+
+fn gen4_skin_temp_bridge(args: Gen4SkinTempArgs) -> GooseResult<serde_json::Value> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now_s = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let from_s = now_s - args.baseline_days * 86400;
+    let store = open_bridge_store(&args.database_path)?;
+    let raw_series = store.query_gen4_skin_temp_series(&args.device_id, from_s, now_s)?;
+    match crate::gen4::compute_skin_temp_delta(&raw_series) {
+        Some(result) => Ok(json!({
+            "found": true,
+            "latest_raw": result.latest_raw,
+            "baseline_raw": result.baseline_raw,
+            "delta_raw": result.delta_raw,
+            "delta_c_approx": result.delta_c_approx,
+            "sample_count": result.sample_count,
+        })),
+        None => Ok(json!({
+            "found": false,
+            "sample_count": raw_series.len(),
+        })),
+    }
+}
+
+fn gen4_sleep_bridge(args: Gen4SleepArgs) -> GooseResult<serde_json::Value> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now_s = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let from_s = now_s - args.lookback_s;
+    let from_ms = from_s * 1000;
+    let now_ms = now_s * 1000;
+    let store = open_bridge_store(&args.database_path)?;
+    let records = store.gen4_history_records_between(&args.device_id, from_s, now_s)?;
+    let rr_samples = store.query_gen4_ppg_beats_with_ts(&args.device_id, from_ms, now_ms)?;
+    let k25_imu = store.query_gen4_k25_imu(&args.device_id, from_s, now_s)?;
+    let imu_source = if k25_imu.len() >= records.len() * 2 { "k25_8hz" } else { "history_1hz" };
+    let result = crate::gen4::detect_gen4_sleep(&records, &rr_samples, &k25_imu);
+    Ok(json!({
+        "sessions": result.sessions,
+        "record_count": records.len(),
+        "rr_count": rr_samples.len(),
+        "k25_imu_count": k25_imu.len(),
+        "imu_source": imu_source,
+    }))
+}
+
+fn gen4_recovery_bridge(args: Gen4RecoveryArgs) -> GooseResult<serde_json::Value> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now_s = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let from_s = now_s - args.lookback_s;
+    let baseline_from_s = now_s - args.baseline_days * 86400;
+    let from_ms = from_s * 1000;
+    let now_ms = now_s * 1000;
+    let baseline_from_ms = baseline_from_s * 1000;
+
+    let store = open_bridge_store(&args.database_path)?;
+
+    // Detect most recent sleep session (reuses gen4.sleep logic)
+    let records = store.gen4_history_records_between(&args.device_id, from_s, now_s)?;
+    let rr_current = store.query_gen4_ppg_beats_with_ts(&args.device_id, from_ms, now_ms)?;
+    let k25_imu = store.query_gen4_k25_imu(&args.device_id, from_s, now_s)?;
+    let sleep_result = crate::gen4::detect_gen4_sleep(&records, &rr_current, &k25_imu);
+    let last_session = sleep_result.sessions.last();
+
+    // Current resting HR: prefer from sleep session, fall back to last 24 h
+    let current_rhr = if let Some(s) = last_session.and_then(|s| s.resting_hr_bpm.map(|v| v)) {
+        Some(s)
+    } else {
+        let hr = store.query_gen4_hr_series(&args.device_id, now_s - 86400, now_s)?;
+        crate::gen4::compute_resting_hr(&hr).map(|r| r.bpm)
+    };
+
+    // Current HRV: prefer sleep-session average, fall back to last 5-min PPG window
+    let current_hrv = if let Some(s) = last_session.and_then(|s| s.avg_hrv_ms) {
+        Some(s)
+    } else {
+        match store.query_gen4_ppg_max_ts(&args.device_id)? {
+            Some(max_ts) => {
+                let rr = store.query_gen4_ppg_beats_rr(&args.device_id, max_ts - 300_000, max_ts)?;
+                crate::gen4::compute_hrv_rmssd(&rr).map(|r| r.rmssd_ms)
+            }
+            None => None,
+        }
+    };
+
+    // Baselines over `baseline_days` of history
+    let rr_bl = store.query_gen4_ppg_beats_rr(&args.device_id, baseline_from_ms, now_ms)?;
+    let hrv_baseline = crate::gen4::compute_hrv_rmssd(&rr_bl).map(|r| r.rmssd_ms);
+
+    let hr_bl = store.query_gen4_hr_series(&args.device_id, baseline_from_s, now_s)?;
+    let rhr_baseline = crate::gen4::compute_resting_hr(&hr_bl).map(|r| r.bpm);
+
+    // Sleep metrics
+    let (sleep_eff, sleep_tst) = last_session
+        .map(|s| (s.efficiency, s.tst_min))
+        .unwrap_or((0.0, 0.0));
+
+    // Skin temp delta
+    let skin_raw = store.query_gen4_skin_temp_series(&args.device_id, baseline_from_s, now_s)?;
+    let skin_temp_delta_c = crate::gen4::compute_skin_temp_delta(&skin_raw)
+        .map(|r| r.delta_c_approx)
+        .unwrap_or(0.0);
+
+    // Prior strain: yesterday's HR window using long-term resting HR as anchor
+    let rhr_for_strain = current_rhr.or(rhr_baseline).unwrap_or(60.0);
+    let yesterday_s = now_s - 86400;
+    let hr_yest = store.query_gen4_hr_series_with_ts(&args.device_id, yesterday_s - 86400, yesterday_s)?;
+    let prior_strain = crate::gen4::compute_gen4_strain(
+        &hr_yest, rhr_for_strain, 190.0, yesterday_s - 86400, yesterday_s,
+    )
+    .map(|r| r.score_0_to_21)
+    .unwrap_or(0.0);
+
+    match (current_rhr, current_hrv, hrv_baseline, rhr_baseline) {
+        (Some(rhr_cur), Some(hrv_cur), Some(hrv_bl), Some(rhr_bl)) => {
+            match crate::gen4::compute_gen4_recovery(
+                hrv_cur, hrv_bl, rhr_cur, rhr_bl,
+                sleep_eff, sleep_tst, skin_temp_delta_c, prior_strain,
+            ) {
+                Some(r) => Ok(json!({
+                    "found": true,
+                    "score_0_to_100": r.score_0_to_100,
+                    "hrv_rmssd_ms": r.hrv_rmssd_ms,
+                    "hrv_baseline_ms": r.hrv_baseline_ms,
+                    "resting_hr_bpm": r.resting_hr_bpm,
+                    "resting_hr_baseline_bpm": r.resting_hr_baseline_bpm,
+                    "sleep_score": r.sleep_score,
+                    "sleep_efficiency": r.sleep_efficiency,
+                    "sleep_tst_min": r.sleep_tst_min,
+                    "skin_temp_delta_c": r.skin_temp_delta_c,
+                    "prior_strain": r.prior_strain,
+                    "components": {
+                        "hrv": r.component_hrv,
+                        "rhr": r.component_rhr,
+                        "sleep": r.component_sleep,
+                        "temperature": r.component_temperature,
+                        "strain": r.component_strain,
+                    },
+                    "sleep_sessions_found": sleep_result.sessions.len(),
+                })),
+                None => Ok(json!({ "found": false, "reason": "compute_failed" })),
+            }
+        }
+        _ => {
+            let mut missing = Vec::new();
+            if current_rhr.is_none() { missing.push("resting_hr"); }
+            if current_hrv.is_none() { missing.push("hrv"); }
+            if hrv_baseline.is_none() { missing.push("hrv_baseline"); }
+            if rhr_baseline.is_none() { missing.push("rhr_baseline"); }
+            Ok(json!({ "found": false, "reason": "insufficient_data", "missing": missing }))
+        }
     }
 }
 

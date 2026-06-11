@@ -17,6 +17,10 @@ struct AppShellView: View {
         .tag(tab)
       }
     }
+    .task { healthStore.applyGen4State(from: model.ble) }
+    .onReceive(model.ble.objectWillChange) { _ in
+      Task { @MainActor in healthStore.applyGen4State(from: model.ble) }
+    }
   }
 
   private var tabSelection: Binding<GooseAppTab> {

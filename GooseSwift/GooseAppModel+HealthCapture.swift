@@ -316,6 +316,10 @@ extension GooseAppModel {
       gen4HistoryAccumulator.flush(deviceID: deviceID)
       if progress.isTerminal && !progress.failed && ble.activeDeviceGeneration == .gen4 {
         computeAndPublishGen4RestingHR(deviceID: deviceID)
+        computeAndPublishGen4Strain(deviceID: deviceID)
+        computeAndPublishGen4SkinTemp(deviceID: deviceID)
+        computeAndPublishGen4Sleep(deviceID: deviceID)
+        computeAndPublishGen4Recovery(deviceID: deviceID)
       }
     }
     guard respiratoryPacketWatchActive else {
@@ -599,6 +603,171 @@ extension GooseAppModel {
       return "\(Int((duration / 60).rounded())) min"
     }
     return "\(Int(duration.rounded())) sec"
+  }
+
+  func computeAndPublishGen4Strain(deviceID: String) {
+    guard !deviceID.isEmpty else { return }
+    guard let restingHR = ble.restingHeartRateEstimateBPM, restingHR > 0 else {
+      ble.record(source: "gen4.strain", title: "compute.skipped", body: "no resting HR")
+      return
+    }
+    let now = Date()
+    let startS = Int64(Calendar.current.startOfDay(for: now).timeIntervalSince1970)
+    let endS = Int64(now.timeIntervalSince1970)
+    DispatchQueue.global(qos: .utility).async { [weak self] in
+      guard let self else { return }
+      do {
+        let response = try rust.request(
+          method: "gen4.strain",
+          args: [
+            "database_path": HealthDataStore.defaultDatabasePath(),
+            "device_id": deviceID,
+            "start_s": startS,
+            "end_s": endS,
+            "resting_hr_bpm": restingHR,
+          ]
+        )
+        guard (response["found"] as? Bool) == true,
+              let score = response["score_0_to_21"] as? Double else {
+          let count = (response["sample_count"] as? Int) ?? 0
+          DispatchQueue.main.async {
+            self.ble.record(source: "gen4.strain", title: "compute.insufficient", body: "samples=\(count)")
+          }
+          return
+        }
+        let avgHR = (response["average_hr_bpm"] as? Double) ?? 0
+        let zones = (response["hr_zone_minutes"] as? [Double]) ?? []
+        DispatchQueue.main.async {
+          self.ble.persistGen4Strain(score: score, capturedAt: Date())
+          self.ble.gen4StrainScore = score
+          self.ble.gen4StrainUpdatedAt = Date()
+          self.ble.record(
+            source: "gen4.strain",
+            title: "compute.ok",
+            body: "score=\(String(format: "%.1f", score)) avg_hr=\(String(format: "%.0f", avgHR)) zones=\(zones.map { String(format: "%.1f", $0) }.joined(separator: "/"))"
+          )
+        }
+      } catch {
+        DispatchQueue.main.async {
+          self.ble.record(level: .error, source: "gen4.strain", title: "compute.failed", body: String(describing: error))
+        }
+      }
+    }
+  }
+
+  func computeAndPublishGen4SkinTemp(deviceID: String) {
+    guard !deviceID.isEmpty else { return }
+    DispatchQueue.global(qos: .utility).async { [weak self] in
+      guard let self else { return }
+      do {
+        let response = try rust.request(
+          method: "gen4.skin_temp",
+          args: [
+            "database_path": HealthDataStore.defaultDatabasePath(),
+            "device_id": deviceID,
+          ]
+        )
+        guard (response["found"] as? Bool) == true,
+              let deltaRaw = response["delta_raw"] as? Double,
+              let deltaCApprox = response["delta_c_approx"] as? Double else {
+          let count = (response["sample_count"] as? Int) ?? 0
+          DispatchQueue.main.async {
+            self.ble.record(source: "gen4.skin_temp", title: "compute.insufficient", body: "samples=\(count)")
+          }
+          return
+        }
+        DispatchQueue.main.async {
+          self.ble.persistGen4SkinTemp(deltaRaw: deltaRaw, deltaCApprox: deltaCApprox, capturedAt: Date())
+          self.ble.gen4SkinTempDeltaRaw = deltaRaw
+          self.ble.gen4SkinTempDeltaCApprox = deltaCApprox
+          self.ble.gen4SkinTempUpdatedAt = Date()
+          self.ble.record(
+            source: "gen4.skin_temp",
+            title: "compute.ok",
+            body: "delta_raw=\(String(format: "%.0f", deltaRaw)) delta_c≈\(String(format: "%.2f", deltaCApprox))°C"
+          )
+        }
+      } catch {
+        DispatchQueue.main.async {
+          self.ble.record(level: .error, source: "gen4.skin_temp", title: "compute.failed", body: String(describing: error))
+        }
+      }
+    }
+  }
+
+  func computeAndPublishGen4Sleep(deviceID: String) {
+    guard !deviceID.isEmpty else { return }
+    DispatchQueue.global(qos: .utility).async { [weak self] in
+      guard let self else { return }
+      do {
+        let response = try rust.request(
+          method: "gen4.sleep",
+          args: [
+            "database_path": HealthDataStore.defaultDatabasePath(),
+            "device_id": deviceID,
+          ]
+        )
+        guard let sessions = response["sessions"] as? [[String: Any]] else { return }
+        DispatchQueue.main.async {
+          self.ble.persistGen4Sleep(sessions: sessions, capturedAt: Date())
+          let count = sessions.count
+          let recordCount = (response["record_count"] as? Int) ?? 0
+          let imuSource = (response["imu_source"] as? String) ?? "?"
+          let k25Count = (response["k25_imu_count"] as? Int) ?? 0
+          self.ble.record(
+            source: "gen4.sleep",
+            title: "compute.ok",
+            body: "sessions=\(count) records=\(recordCount) imu=\(imuSource)(\(k25Count))"
+          )
+        }
+      } catch {
+        DispatchQueue.main.async {
+          self.ble.record(level: .error, source: "gen4.sleep", title: "compute.failed", body: String(describing: error))
+        }
+      }
+    }
+  }
+
+  func computeAndPublishGen4Recovery(deviceID: String) {
+    guard !deviceID.isEmpty else { return }
+    DispatchQueue.global(qos: .utility).async { [weak self] in
+      guard let self else { return }
+      do {
+        let response = try rust.request(
+          method: "gen4.recovery",
+          args: [
+            "database_path": HealthDataStore.defaultDatabasePath(),
+            "device_id": deviceID,
+          ]
+        )
+        guard (response["found"] as? Bool) == true,
+              let score = response["score_0_to_100"] as? Double else {
+          let reason = (response["reason"] as? String) ?? "unknown"
+          let missing = (response["missing"] as? [String])?.joined(separator: ",") ?? ""
+          DispatchQueue.main.async {
+            self.ble.record(source: "gen4.recovery", title: "compute.insufficient",
+                            body: "reason=\(reason) missing=[\(missing)]")
+          }
+          return
+        }
+        let components = (response["components"] as? [String: Double]) ?? [:]
+        DispatchQueue.main.async {
+          self.ble.persistGen4Recovery(score: score, components: components, capturedAt: Date())
+          let hrv = (response["hrv_rmssd_ms"] as? Double).map { String(format: "%.1f", $0) } ?? "?"
+          let rhr = (response["resting_hr_bpm"] as? Double).map { String(format: "%.1f", $0) } ?? "?"
+          self.ble.record(
+            source: "gen4.recovery",
+            title: "compute.ok",
+            body: "score=\(String(format: "%.1f", score)) hrv=\(hrv)ms rhr=\(rhr)bpm"
+          )
+        }
+      } catch {
+        DispatchQueue.main.async {
+          self.ble.record(level: .error, source: "gen4.recovery", title: "compute.failed",
+                          body: String(describing: error))
+        }
+      }
+    }
   }
 
   func computeAndPublishGen4RestingHR(deviceID: String) {

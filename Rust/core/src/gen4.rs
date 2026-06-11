@@ -1434,6 +1434,116 @@ pub fn detect_ppg_beats(packets: &[(Vec<i64>, i64)]) -> Vec<Gen4PpgBeat> {
 }
 
 // ---------------------------------------------------------------------------
+// Strain — zone-weighted cardiovascular load from 1 Hz HR history
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct Gen4StrainResult {
+    pub score_0_to_21: f64,
+    pub zone_load: f64,
+    pub duration_minutes: f64,
+    pub average_hr_bpm: f64,
+    pub max_hr_bpm: f64,
+    pub resting_hr_bpm: f64,
+    pub hr_zone_minutes: Vec<f64>,
+}
+
+/// Compute strain score from 1 Hz HR samples using the same 5-zone HRR model as
+/// `goose_strain_v0`. Zone boundaries (% of HRR): <20 / 20–40 / 40–60 / 60–80 / ≥80.
+/// `max_hr_bpm` should be the age-based estimate (220 – age) supplied by the caller;
+/// the empirical max from `hr_samples` is used when it meaningfully exceeds resting HR.
+pub fn compute_gen4_strain(
+    hr_samples: &[(i64, i64)], // (ts_s, bpm)
+    resting_hr_bpm: f64,
+    max_hr_bpm: f64,
+    start_s: i64,
+    end_s: i64,
+) -> Option<Gen4StrainResult> {
+    if hr_samples.is_empty() || resting_hr_bpm <= 0.0 || max_hr_bpm <= resting_hr_bpm {
+        return None;
+    }
+
+    let duration_minutes = (end_s - start_s) as f64 / 60.0;
+    if duration_minutes <= 0.0 {
+        return None;
+    }
+
+    let bpms: Vec<f64> = hr_samples.iter().map(|&(_, b)| b as f64).collect();
+    let avg_hr = bpms.iter().sum::<f64>() / bpms.len() as f64;
+    let obs_max = bpms.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    // Prefer empirical max when it's meaningfully above resting; cap at supplied max_hr.
+    let effective_max = if obs_max > resting_hr_bpm + 20.0 {
+        obs_max.min(max_hr_bpm)
+    } else {
+        max_hr_bpm
+    };
+
+    let minutes_per_sample = duration_minutes / bpms.len() as f64;
+    let mut zones = vec![0.0f64; 5];
+    for bpm in &bpms {
+        let reserve = ((bpm - resting_hr_bpm) / (effective_max - resting_hr_bpm)).clamp(0.0, 1.0);
+        let z = if reserve < 0.20 {
+            0
+        } else if reserve < 0.40 {
+            1
+        } else if reserve < 0.60 {
+            2
+        } else if reserve < 0.80 {
+            3
+        } else {
+            4
+        };
+        zones[z] += minutes_per_sample;
+    }
+
+    let zone_load: f64 = zones.iter().zip([1.0, 2.0, 3.0, 4.0, 5.0]).map(|(m, w)| m * w).sum();
+    let score = (zone_load / 20.0).clamp(0.0, 21.0);
+
+    Some(Gen4StrainResult {
+        score_0_to_21: (score * 10.0).round() / 10.0,
+        zone_load: (zone_load * 10.0).round() / 10.0,
+        duration_minutes: (duration_minutes * 10.0).round() / 10.0,
+        average_hr_bpm: (avg_hr * 10.0).round() / 10.0,
+        max_hr_bpm: effective_max,
+        resting_hr_bpm,
+        hr_zone_minutes: zones.iter().map(|&v| (v * 10.0).round() / 10.0).collect(),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Skin temperature — ADC delta from personal baseline (no absolute °C conversion)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct Gen4SkinTempResult {
+    pub latest_raw: i64,
+    pub baseline_raw: f64,
+    pub delta_raw: f64,
+    /// Provisional linear approximation: ~0.004 °C per ADC unit.
+    /// The actual conversion is computed server-side by WHOOP and is not publicly documented.
+    pub delta_c_approx: f64,
+    pub sample_count: usize,
+}
+
+/// Compute skin temp delta from a rolling ADC baseline.
+/// Returns `None` when fewer than 2 samples are available.
+pub fn compute_skin_temp_delta(raw_series: &[i64]) -> Option<Gen4SkinTempResult> {
+    if raw_series.len() < 2 {
+        return None;
+    }
+    let baseline: f64 = raw_series.iter().map(|&v| v as f64).sum::<f64>() / raw_series.len() as f64;
+    let latest = *raw_series.last().unwrap();
+    let delta_raw = latest as f64 - baseline;
+    Some(Gen4SkinTempResult {
+        latest_raw: latest,
+        baseline_raw: (baseline * 10.0).round() / 10.0,
+        delta_raw: (delta_raw * 10.0).round() / 10.0,
+        delta_c_approx: (delta_raw * 0.004 * 10.0).round() / 10.0,
+        sample_count: raw_series.len(),
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Resting HR — minimum 10-minute rolling average from 1 Hz HR samples
 // ---------------------------------------------------------------------------
 
@@ -1492,6 +1602,826 @@ pub fn compute_hrv_rmssd(rr_series: &[i64]) -> Option<Gen4HrvRmssdResult> {
         rmssd_ms: (rmssd * 10.0).round() / 10.0,
         rr_count: rr_series.len(),
         chunk_count: 1,
+    })
+}
+
+// ===========================================================================
+// Gen4 sleep staging — gravity + HR + RR + resp
+// Port of noop/Packages/StrandAnalytics/Sources/StrandAnalytics/SleepStager.swift
+// ===========================================================================
+
+// Stage 0 constants
+const SLP_STILL_G: f64 = 0.01;
+const SLP_STILL_WIN_MIN: i64 = 15;
+const SLP_STILL_FRAC: f64 = 0.70;
+const SLP_MAX_GAP_S: i64 = 20 * 60;
+const SLP_MERGE_S: i64 = 15 * 60;
+const SLP_MIN_SLEEP_S: i64 = 60 * 60;
+const SLP_HR_MULT: f64 = 1.05;
+const SLP_HR_REFINE_MIN: usize = 30;
+const SLP_ONSET_PERSIST: usize = 3;
+// Stage 1-3 constants
+const SLP_EPOCH_S: f64 = 30.0;
+const SLP_FEAT_WIN_S: f64 = 300.0;
+const SLP_CK_WEIGHTS: [f64; 7] = [106.0, 54.0, 58.0, 76.0, 230.0, 74.0, 67.0];
+const SLP_CK_SCALE: f64 = 0.001;
+const SLP_CK_DIV: f64 = 100.0;
+const SLP_CK_CLIP: f64 = 300.0;
+const SLP_CK_BACK: usize = 4;
+const SLP_MOVE_G: f64 = 0.01;
+const SLP_DOG_S1: f64 = 120.0;
+const SLP_DOG_S2: f64 = 600.0;
+const SLP_HR_LO_PCT: f64 = 25.0;
+const SLP_HR_HI_PCT: f64 = 70.0;
+const SLP_HRV_HI_PCT: f64 = 70.0;
+const SLP_HRVAR_HI_PCT: f64 = 65.0;
+const SLP_RRV_HI_PCT: f64 = 65.0;
+const SLP_RRV_LO_PCT: f64 = 50.0;
+const SLP_WAKE_MV: f64 = 0.15;
+const SLP_STILL_MV: f64 = 0.10;
+const SLP_SMOOTH: usize = 5;
+const SLP_NO_REM_MIN: f64 = 15.0;
+const SLP_DEEP_FRAC: f64 = 1.0 / 3.0;
+
+#[derive(Debug, Serialize, Clone)]
+pub struct Gen4StageSegment {
+    pub start_s: i64,
+    pub end_s: i64,
+    /// "wake" | "light" | "deep" | "rem"
+    pub stage: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Gen4SleepSession {
+    pub start_s: i64,
+    pub end_s: i64,
+    /// Fraction of time in bed spent asleep (TST/TIB).
+    pub efficiency: f64,
+    pub stages: Vec<Gen4StageSegment>,
+    pub resting_hr_bpm: Option<f64>,
+    pub avg_hrv_ms: Option<f64>,
+    pub tib_min: f64,
+    pub tst_min: f64,
+    pub wake_min: f64,
+    pub light_min: f64,
+    pub deep_min: f64,
+    pub rem_min: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Gen4SleepResult {
+    pub sessions: Vec<Gen4SleepSession>,
+}
+
+/// Detect sleep sessions from Gen4 historical data.
+/// `records` must be sorted by `ts` ASC. `rr_samples` is `(ts_ms, rr_ms)`.
+/// `k25_imu` is optional raw-count accelerometer triples `(ts_s, x, y, z)` from K25 frames.
+/// When provided and covering the data range, K25 IMU (8 Hz) is preferred over the
+/// 1 Hz history gravity; the counts are auto-calibrated using median |accel| ≈ 1g.
+pub fn detect_gen4_sleep(
+    records: &[Gen4HistoryRecord],
+    rr_samples: &[(i64, i64)],
+    k25_imu: &[(i64, i64, i64, i64)],
+) -> Gen4SleepResult {
+    // Build gravity source — prefer K25 IMU when it provides denser coverage.
+    let hist_grav: Vec<(i64, f64, f64, f64)> = records
+        .iter()
+        .filter_map(|r| Some((r.ts, r.gravity_x?, r.gravity_y?, r.gravity_z?)))
+        .collect();
+
+    let grav: Vec<(i64, f64, f64, f64)> = if let Some(scale) = slp_imu_scale(k25_imu) {
+        // K25 has >= 2x the density of history gravity — use it, normalised to g.
+        let k25_as_g: Vec<(i64, f64, f64, f64)> = k25_imu
+            .iter()
+            .map(|&(ts, x, y, z)| (ts, x as f64 / scale, y as f64 / scale, z as f64 / scale))
+            .collect();
+        if k25_as_g.len() >= hist_grav.len() * 2 {
+            k25_as_g
+        } else {
+            hist_grav
+        }
+    } else {
+        hist_grav
+    };
+
+    if grav.len() < 2 {
+        return Gen4SleepResult { sessions: vec![] };
+    }
+
+    let hr: Vec<(i64, i64)> = records
+        .iter()
+        .filter_map(|r| Some((r.ts, r.heart_rate?)))
+        .filter(|&(_, b)| b > 0)
+        .collect();
+
+    let resp: Vec<(i64, i64)> = records
+        .iter()
+        .filter_map(|r| Some((r.ts, r.resp_rate_raw?)))
+        .collect();
+
+    // Stage 0: gravity-stillness → candidate sleep periods
+    let deltas = slp_gravity_deltas(&grav);
+    let flags = slp_classify_still(&grav, &deltas);
+    let mut runs = slp_build_runs(&grav, &flags);
+    runs = slp_merge_periods(runs);
+
+    let hr_baseline = slp_median_hr(&hr);
+
+    let mut sessions = Vec::new();
+    for run in &runs {
+        if run.2 != "sleep" { continue; }
+        if (run.1 - run.0) <= SLP_MIN_SLEEP_S { continue; }
+        if !slp_confirm_hr(run.0, run.1, &hr, hr_baseline) { continue; }
+
+        let stages = slp_stage_session(run.0, run.1, &grav, &deltas, &hr, rr_samples, &resp);
+        let (tib, tst, wake_s, light_s, deep_s, rem_s) = slp_stage_times(run.0, run.1, &stages);
+        let efficiency = if tib > 0.0 { (tst / tib).min(1.0) } else { 0.0 };
+        let resting = slp_session_resting_hr(run.0, run.1, &hr);
+        let avg_hrv = slp_session_avg_hrv(run.0, run.1, rr_samples);
+
+        sessions.push(Gen4SleepSession {
+            start_s: run.0,
+            end_s: run.1,
+            efficiency: (efficiency * 1000.0).round() / 1000.0,
+            stages,
+            resting_hr_bpm: resting,
+            avg_hrv_ms: avg_hrv,
+            tib_min: (tib / 60.0 * 10.0).round() / 10.0,
+            tst_min: (tst / 60.0 * 10.0).round() / 10.0,
+            wake_min: (wake_s / 60.0 * 10.0).round() / 10.0,
+            light_min: (light_s / 60.0 * 10.0).round() / 10.0,
+            deep_min: (deep_s / 60.0 * 10.0).round() / 10.0,
+            rem_min: (rem_s / 60.0 * 10.0).round() / 10.0,
+        });
+    }
+    Gen4SleepResult { sessions }
+}
+
+// (start_s, end_s, "sleep"|"active")
+type SleepPeriod = (i64, i64, &'static str);
+
+/// Estimate the raw-count-to-g scale factor from K25 IMU samples.
+/// At rest, |accel| ≈ 1g, so `median(|accel|)` in raw counts gives the scale.
+/// Returns None if the data is implausible (too few samples or out of range).
+fn slp_imu_scale(imu: &[(i64, i64, i64, i64)]) -> Option<f64> {
+    if imu.len() < 80 {
+        return None; // need at least ~10 s at 8 Hz
+    }
+    let mut magnitudes: Vec<f64> = imu
+        .iter()
+        .map(|&(_, x, y, z)| {
+            let fx = x as f64;
+            let fy = y as f64;
+            let fz = z as f64;
+            (fx * fx + fy * fy + fz * fz).sqrt()
+        })
+        .collect();
+    magnitudes.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let scale = magnitudes[magnitudes.len() / 2];
+    // Sanity: typical WHOOP IMU at ±2g→±16g gives 200..20000 LSB/g
+    if scale < 50.0 || scale > 50_000.0 {
+        return None;
+    }
+    Some(scale)
+}
+
+fn slp_gravity_deltas(grav: &[(i64, f64, f64, f64)]) -> Vec<f64> {
+    let mut d = vec![0.0f64; grav.len()];
+    for i in 1..grav.len() {
+        let dx = grav[i].1 - grav[i - 1].1;
+        let dy = grav[i].2 - grav[i - 1].2;
+        let dz = grav[i].3 - grav[i - 1].3;
+        d[i] = (dx * dx + dy * dy + dz * dz).sqrt();
+    }
+    d
+}
+
+fn slp_window_samples(grav: &[(i64, f64, f64, f64)]) -> usize {
+    if grav.len() < 2 {
+        return 3;
+    }
+    let mut gaps: Vec<f64> = grav
+        .windows(2)
+        .map(|w| (w[1].0 - w[0].0) as f64)
+        .filter(|&g| g > 0.0 && g < 300.0)
+        .collect();
+    if gaps.is_empty() {
+        return 3;
+    }
+    gaps.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let interval = gaps[gaps.len() / 2].max(1.0);
+    ((SLP_STILL_WIN_MIN * 60) as f64 / interval).max(3.0) as usize
+}
+
+fn slp_classify_still(grav: &[(i64, f64, f64, f64)], deltas: &[f64]) -> Vec<bool> {
+    let n = grav.len();
+    if n < 2 {
+        return vec![false; n];
+    }
+    let half = slp_window_samples(grav) / 2;
+    (0..n)
+        .map(|i| {
+            let lo = i.saturating_sub(half);
+            let hi = (i + half + 1).min(n);
+            let still = (lo..hi).filter(|&j| deltas[j] < SLP_STILL_G).count();
+            still as f64 / (hi - lo) as f64 >= SLP_STILL_FRAC
+        })
+        .collect()
+}
+
+fn slp_build_runs(grav: &[(i64, f64, f64, f64)], flags: &[bool]) -> Vec<SleepPeriod> {
+    let n = grav.len();
+    if n == 0 {
+        return vec![];
+    }
+    let mut periods = Vec::new();
+    let mut run_start = 0usize;
+    for i in 1..=n {
+        let at_end = i == n;
+        let gap = !at_end && (grav[i].0 - grav[i - 1].0) > SLP_MAX_GAP_S;
+        let class_change = !at_end && flags[i] != flags[run_start];
+        if at_end || gap || class_change {
+            let stage: &'static str = if flags[run_start] { "sleep" } else { "active" };
+            periods.push((grav[run_start].0, grav[i - 1].0, stage));
+            run_start = i;
+        }
+    }
+    periods
+}
+
+fn slp_merge_periods(periods: Vec<SleepPeriod>) -> Vec<SleepPeriod> {
+    if periods.is_empty() {
+        return periods;
+    }
+    let mut input = periods;
+    let mut merged: Vec<SleepPeriod> = Vec::new();
+    let mut i = 0;
+    while i < input.len() {
+        let (s, e, stage) = input[i];
+        if e - s >= SLP_MERGE_S {
+            merged.push((s, e, stage));
+            i += 1;
+            continue;
+        }
+        let has_prev = !merged.is_empty();
+        let has_next = i + 1 < input.len();
+        let bridges = has_prev && has_next && merged.last().unwrap().2 == input[i + 1].2;
+        if bridges {
+            let (prev_s, _, prev_stage) = merged.pop().unwrap();
+            let next_e = input[i + 1].1;
+            merged.push((prev_s, next_e, prev_stage));
+            i += 2;
+        } else if has_next {
+            input[i + 1] = (s, input[i + 1].1, input[i + 1].2);
+            i += 1;
+        } else if has_prev {
+            let (prev_s, _, prev_stage) = merged.pop().unwrap();
+            merged.push((prev_s, e, prev_stage));
+            i += 1;
+        } else {
+            i += 1;
+        }
+    }
+    merged
+}
+
+fn slp_median_hr(hr: &[(i64, i64)]) -> Option<f64> {
+    if hr.len() < 5 {
+        return None;
+    }
+    let mut bpms: Vec<f64> = hr.iter().map(|&(_, b)| b as f64).collect();
+    bpms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    Some(bpms[bpms.len() / 2])
+}
+
+fn slp_confirm_hr(start: i64, end: i64, hr: &[(i64, i64)], baseline: Option<f64>) -> bool {
+    let Some(bl) = baseline else { return true; };
+    let seg: Vec<_> = hr.iter().filter(|&&(ts, _)| ts >= start && ts <= end).collect();
+    if seg.len() < SLP_HR_REFINE_MIN { return true; }
+    let mean = seg.iter().map(|&&(_, b)| b as f64).sum::<f64>() / seg.len() as f64;
+    mean <= bl * SLP_HR_MULT
+}
+
+// ---- Stages 1-3: 30s epoch staging ----
+
+struct SlpEpochFeats {
+    move_frac: f64,
+    ck_sleep: bool,
+    hr: f64,
+    hr_var: f64,
+    rmssd: f64,
+    resp_rate: f64,
+    rrv: f64,
+    clock: f64,
+}
+
+fn slp_stage_session(
+    start: i64,
+    end: i64,
+    grav: &[(i64, f64, f64, f64)],
+    all_deltas: &[f64],
+    hr: &[(i64, i64)],
+    rr: &[(i64, i64)],
+    resp: &[(i64, i64)],
+) -> Vec<Gen4StageSegment> {
+    let fallback = || {
+        vec![Gen4StageSegment { start_s: start, end_s: end, stage: "light".into() }]
+    };
+
+    let (g_seg, d_seg): (Vec<_>, Vec<_>) = grav
+        .iter()
+        .zip(all_deltas.iter())
+        .filter(|&(&(ts, ..), _)| ts >= start && ts <= end)
+        .map(|(&g, &d)| (g, d))
+        .unzip();
+
+    if g_seg.len() < 2 { return fallback(); }
+
+    let hr_seg: Vec<(i64, i64)> = hr
+        .iter()
+        .filter(|&&(ts, _)| ts >= start && ts <= end)
+        .copied()
+        .collect();
+    let rr_seg: Vec<(i64, i64)> = rr
+        .iter()
+        .filter(|&&(ts_ms, _)| {
+            let ts_s = ts_ms / 1000;
+            ts_s >= start && ts_s <= end
+        })
+        .copied()
+        .collect();
+    let resp_seg: Vec<(i64, i64)> = resp
+        .iter()
+        .filter(|&&(ts, _)| ts >= start && ts <= end)
+        .copied()
+        .collect();
+
+    let n_ep = (((end - start) as f64 / SLP_EPOCH_S).ceil() as usize).max(1);
+    let edges: Vec<f64> = (0..=n_ep)
+        .map(|k| (start as f64 + k as f64 * SLP_EPOCH_S).min(end as f64))
+        .collect();
+
+    let ep_idx = |ts_s: f64| -> Option<usize> {
+        if ts_s < start as f64 || ts_s > end as f64 { return None; }
+        let i = ((ts_s - start as f64) / SLP_EPOCH_S) as usize;
+        Some(i.min(n_ep - 1))
+    };
+
+    let mut counts = vec![0.0f64; n_ep];
+    let mut grav_n = vec![0usize; n_ep];
+    let mut move_n = vec![0usize; n_ep];
+    let mut hr_sum = vec![0.0f64; n_ep];
+    let mut hr_cnt = vec![0usize; n_ep];
+    let mut rr_buck: Vec<Vec<f64>> = vec![vec![]; n_ep];
+    let mut resp_buck: Vec<Vec<f64>> = vec![vec![]; n_ep];
+
+    for (&(ts, ..), &d) in g_seg.iter().zip(d_seg.iter()) {
+        if let Some(i) = ep_idx(ts as f64) {
+            counts[i] += d;
+            grav_n[i] += 1;
+            if d >= SLP_MOVE_G { move_n[i] += 1; }
+        }
+    }
+    for &(ts, bpm) in &hr_seg {
+        if let Some(i) = ep_idx(ts as f64) {
+            hr_sum[i] += bpm as f64;
+            hr_cnt[i] += 1;
+        }
+    }
+    for &(ts_ms, rr_ms) in &rr_seg {
+        if let Some(i) = ep_idx((ts_ms / 1000) as f64) {
+            if (300..=2500).contains(&rr_ms) {
+                rr_buck[i].push(rr_ms as f64);
+            }
+        }
+    }
+    for &(ts, raw) in &resp_seg {
+        if let Some(i) = ep_idx(ts as f64) {
+            resp_buck[i].push(raw as f64);
+        }
+    }
+
+    let hr_ep: Vec<f64> = (0..n_ep)
+        .map(|i| if hr_cnt[i] > 0 { hr_sum[i] / hr_cnt[i] as f64 } else { f64::NAN })
+        .collect();
+    let mv_ep: Vec<f64> = (0..n_ep)
+        .map(|i| if grav_n[i] > 0 { move_n[i] as f64 / grav_n[i] as f64 } else { 1.0 })
+        .collect();
+
+    // Cole-Kripke
+    let rescaled: Vec<f64> = counts.iter().map(|&c| (c / SLP_CK_DIV).min(SLP_CK_CLIP)).collect();
+    let ck: Vec<bool> = (0..n_ep)
+        .map(|i| {
+            let mut si = 0.0f64;
+            for (k, &w) in SLP_CK_WEIGHTS.iter().enumerate() {
+                let j = i as isize - SLP_CK_BACK as isize + k as isize;
+                let a = if j >= 0 && (j as usize) < n_ep { rescaled[j as usize] } else { 0.0 };
+                si += w * a;
+            }
+            si * SLP_CK_SCALE < 1.0
+        })
+        .collect();
+
+    let (onset, final_w) = slp_onset_final(&ck);
+    let dog = slp_dog_hr(&hr_ep);
+    let half_w = ((SLP_FEAT_WIN_S / SLP_EPOCH_S / 2.0).round() as usize).max(1);
+    let span = (final_w as f64 - onset as f64).max(1.0);
+
+    let feats: Vec<SlpEpochFeats> = (0..n_ep)
+        .map(|i| {
+            let lo = i.saturating_sub(half_w);
+            let hi = (i + half_w + 1).min(n_ep);
+
+            let win_hr: Vec<f64> = (lo..hi).filter_map(|j| hr_ep[j].is_finite().then_some(hr_ep[j])).collect();
+            let hr_mean = if win_hr.is_empty() { f64::NAN } else { win_hr.iter().sum::<f64>() / win_hr.len() as f64 };
+
+            let win_dog: Vec<f64> = (lo..hi).map(|j| if dog.is_empty() { 0.0 } else { dog[j] }).collect();
+            let hr_var = if win_dog.len() >= 2 { slp_std(&win_dog) } else { f64::NAN };
+
+            let win_rr: Vec<f64> = (lo..hi).flat_map(|j| rr_buck[j].iter().copied()).collect();
+            let rmssd = if win_rr.len() >= 5 { slp_rmssd(&win_rr) } else { f64::NAN };
+
+            let win_resp: Vec<f64> = (lo..hi).flat_map(|j| resp_buck[j].iter().copied()).collect();
+            let (resp_rate, rrv) = slp_resp_rate_rrv(&win_resp);
+
+            let clock = ((i as f64 - onset as f64) / span).clamp(0.0, 1.0);
+            SlpEpochFeats { move_frac: mv_ep[i], ck_sleep: ck[i], hr: hr_mean, hr_var, rmssd, resp_rate, rrv, clock }
+        })
+        .collect();
+
+    // Session-relative percentile references over CK-sleep epochs
+    let slp_feats: Vec<&SlpEpochFeats> = if feats.iter().any(|f| f.ck_sleep) {
+        feats.iter().filter(|f| f.ck_sleep).collect()
+    } else {
+        feats.iter().collect()
+    };
+
+    let pct = |vals: Vec<f64>, p: f64| slp_percentile(vals, p);
+    let hr_lo = pct(slp_feats.iter().filter_map(|f| f.hr.is_finite().then_some(f.hr)).collect(), SLP_HR_LO_PCT);
+    let hr_hi = pct(slp_feats.iter().filter_map(|f| f.hr.is_finite().then_some(f.hr)).collect(), SLP_HR_HI_PCT);
+    let rmssd_hi = pct(slp_feats.iter().filter_map(|f| f.rmssd.is_finite().then_some(f.rmssd)).collect(), SLP_HRV_HI_PCT);
+    let hrvar_hi = pct(slp_feats.iter().filter_map(|f| f.hr_var.is_finite().then_some(f.hr_var)).collect(), SLP_HRVAR_HI_PCT);
+    let rrv_hi = pct(slp_feats.iter().filter_map(|f| f.rrv.is_finite().then_some(f.rrv)).collect(), SLP_RRV_HI_PCT);
+    let rrv_lo = pct(slp_feats.iter().filter_map(|f| f.rrv.is_finite().then_some(f.rrv)).collect(), SLP_RRV_LO_PCT);
+
+    let mut labels: Vec<&'static str> = feats
+        .iter()
+        .map(|f| slp_classify(f, hr_lo, hr_hi, rmssd_hi, hrvar_hi, rrv_hi, rrv_lo))
+        .collect();
+    labels = slp_smooth(labels);
+    labels = slp_physiology(labels, &feats, onset, final_w);
+    for i in 0..labels.len() {
+        if i < onset || i > final_w { labels[i] = "wake"; }
+    }
+
+    // Merge consecutive same-stage epochs into segments
+    let mut segs: Vec<Gen4StageSegment> = Vec::new();
+    for (i, &stage) in labels.iter().enumerate() {
+        let seg_s = edges[i].round() as i64;
+        let seg_e = edges[i + 1].round() as i64;
+        if let Some(last) = segs.last_mut() {
+            if last.stage == stage { last.end_s = seg_e; continue; }
+        }
+        segs.push(Gen4StageSegment { start_s: seg_s, end_s: seg_e, stage: stage.into() });
+    }
+    if let Some(last) = segs.last_mut() { last.end_s = end; }
+    if segs.is_empty() { return fallback(); }
+    segs
+}
+
+fn slp_onset_final(ck: &[bool]) -> (usize, usize) {
+    let n = ck.len();
+    if n == 0 { return (0, 0); }
+    let mut onset = None;
+    let mut run = 0usize;
+    for (i, &s) in ck.iter().enumerate() {
+        run = if s { run + 1 } else { 0 };
+        if run >= SLP_ONSET_PERSIST { onset = Some(i + 1 - SLP_ONSET_PERSIST); break; }
+    }
+    let final_w = ck.iter().rposition(|&v| v).unwrap_or(n - 1);
+    let o = onset.unwrap_or(0);
+    (o, if final_w < o { n - 1 } else { final_w })
+}
+
+fn slp_dog_hr(hr_ep: &[f64]) -> Vec<f64> {
+    let n = hr_ep.len();
+    if n == 0 { return vec![]; }
+    let known: Vec<usize> = (0..n).filter(|&i| hr_ep[i].is_finite()).collect();
+    if known.is_empty() { return vec![0.0; n]; }
+    let filled: Vec<f64> = (0..n).map(|i| {
+        if hr_ep[i].is_finite() { return hr_ep[i]; }
+        if i <= *known.first().unwrap() { return hr_ep[*known.first().unwrap()]; }
+        if i >= *known.last().unwrap() { return hr_ep[*known.last().unwrap()]; }
+        let lo = known.iter().copied().rev().find(|&k| k <= i).unwrap_or(0);
+        let hi = known.iter().copied().find(|&k| k >= i).unwrap_or(n - 1);
+        if hi == lo { return hr_ep[lo]; }
+        let frac = (i - lo) as f64 / (hi - lo) as f64;
+        hr_ep[lo] + frac * (hr_ep[hi] - hr_ep[lo])
+    }).collect();
+    let k1 = slp_gauss_kernel(SLP_DOG_S1);
+    let k2 = slp_gauss_kernel(SLP_DOG_S2);
+    let g1 = slp_convolve(&filled, &k1);
+    let g2 = slp_convolve(&filled, &k2);
+    (0..n).map(|i| g1[i] - g2[i]).collect()
+}
+
+fn slp_gauss_kernel(sigma_s: f64) -> Vec<f64> {
+    let sigma = (sigma_s / SLP_EPOCH_S).max(1e-6);
+    let r = ((3.0 * sigma).ceil() as usize).max(1);
+    let mut k: Vec<f64> = (-(r as isize)..=(r as isize))
+        .map(|x| (-0.5 * (x as f64 / sigma).powi(2)).exp())
+        .collect();
+    let s: f64 = k.iter().sum();
+    k.iter_mut().for_each(|v| *v /= s);
+    k
+}
+
+fn slp_convolve(x: &[f64], kernel: &[f64]) -> Vec<f64> {
+    let r = kernel.len() / 2;
+    if r == 0 || x.is_empty() { return x.to_vec(); }
+    let mut pad = Vec::with_capacity(x.len() + 2 * r);
+    for i in 0..r { pad.push(x[(r - i).min(x.len() - 1)]); }
+    pad.extend_from_slice(x);
+    for i in 0..r { pad.push(x[x.len().saturating_sub(2 + i)]); }
+    let m = kernel.len();
+    let mut out = Vec::with_capacity(x.len());
+    for i in 0..=(pad.len().saturating_sub(m)) {
+        let acc: f64 = (0..m).map(|j| pad[i + j] * kernel[m - 1 - j]).sum();
+        out.push(acc);
+        if out.len() == x.len() { break; }
+    }
+    // pad to x.len() if short (edge case)
+    while out.len() < x.len() { out.push(*out.last().unwrap_or(&0.0)); }
+    out
+}
+
+fn slp_classify(f: &SlpEpochFeats, hr_lo: Option<f64>, hr_hi: Option<f64>,
+                rmssd_hi: Option<f64>, hrvar_hi: Option<f64>,
+                rrv_hi: Option<f64>, rrv_lo: Option<f64>) -> &'static str {
+    let has_hr = f.hr.is_finite();
+    let hr_low = has_hr && hr_lo.map_or(false, |lo| f.hr <= lo);
+    let hr_high = has_hr && hr_hi.map_or(false, |hi| f.hr >= hi);
+    let parasynth_hi = f.rmssd.is_finite() && rmssd_hi.map_or(false, |hi| f.rmssd >= hi);
+    let hrvar_high = f.hr_var.is_finite() && hrvar_hi.map_or(false, |hi| f.hr_var >= hi);
+    let cardiac_act = hr_high || hrvar_high;
+    let rrv_irr = f.rrv.is_finite() && rrv_hi.map_or(false, |hi| f.rrv >= hi);
+    let rrv_reg = !f.rrv.is_finite() || rrv_lo.map_or(false, |lo| f.rrv <= lo);
+    let still = f.move_frac <= SLP_STILL_MV;
+    let moving = f.move_frac >= SLP_WAKE_MV;
+
+    if moving && (cardiac_act || !has_hr) { return "wake"; }
+    if still && parasynth_hi && hr_low && rrv_reg { return "deep"; }
+    if still && cardiac_act && rrv_irr { return "rem"; }
+    if still && hr_high && hrvar_high && !f.rrv.is_finite() { return "rem"; }
+    "light"
+}
+
+fn slp_smooth(mut labels: Vec<&'static str>) -> Vec<&'static str> {
+    let n = labels.len();
+    if n == 0 { return labels; }
+    let w = if SLP_SMOOTH % 2 == 0 { SLP_SMOOTH + 1 } else { SLP_SMOOTH };
+    let half = w / 2;
+    let orig = labels.clone();
+    for i in 0..n {
+        let lo = i.saturating_sub(half);
+        let hi = (i + half + 1).min(n);
+        let mut counts = std::collections::HashMap::<&str, usize>::new();
+        let mut order: Vec<&str> = Vec::new();
+        for &s in &orig[lo..hi] {
+            if !counts.contains_key(s) { order.push(s); }
+            *counts.entry(s).or_insert(0) += 1;
+        }
+        if let Some(&best) = counts.values().max() {
+            let winners: Vec<&&str> = order.iter().filter(|&&s| counts[s] == best).collect();
+            if !winners.iter().any(|&&w| w == orig[i]) {
+                labels[i] = winners[0];
+            }
+        }
+    }
+    labels
+}
+
+fn slp_physiology(mut labels: Vec<&'static str>, feats: &[SlpEpochFeats], onset: usize, final_w: usize) -> Vec<&'static str> {
+    let no_rem = (SLP_NO_REM_MIN * 60.0 / SLP_EPOCH_S).round() as usize;
+    for (i, f) in feats.iter().enumerate() {
+        if i < onset || i > final_w { continue; }
+        if labels[i] == "rem" && (i - onset) < no_rem { labels[i] = "light"; }
+        if labels[i] == "deep" && f.clock > SLP_DEEP_FRAC { labels[i] = "light"; }
+    }
+    labels
+}
+
+fn slp_resp_rate_rrv(raw: &[f64]) -> (f64, f64) {
+    if raw.len() < 8 { return (f64::NAN, f64::NAN); }
+    let mean = raw.iter().sum::<f64>() / raw.len() as f64;
+    let x: Vec<f64> = raw.iter().map(|&v| v - mean).collect();
+    if x.iter().all(|&v| v.abs() < 1e-12) { return (f64::NAN, f64::NAN); }
+    let sd = slp_std(&x);
+    if sd <= 0.0 { return (f64::NAN, f64::NAN); }
+    let peaks = slp_find_peaks(&x, 2, 0.0);
+    if peaks.len() < 3 { return (f64::NAN, f64::NAN); }
+    let ivs: Vec<f64> = peaks.windows(2)
+        .map(|w| (w[1] - w[0]) as f64)
+        .filter(|&iv| iv >= 1.5 && iv <= 12.0)
+        .collect();
+    if ivs.len() < 2 { return (f64::NAN, f64::NAN); }
+    let mut sorted = ivs.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    (60.0 / sorted[sorted.len() / 2], slp_std(&ivs))
+}
+
+fn slp_find_peaks(x: &[f64], distance: usize, height: f64) -> Vec<usize> {
+    let n = x.len();
+    if n < 3 { return vec![]; }
+    let mut candidates = Vec::new();
+    let mut i = 1usize;
+    while i < n - 1 {
+        if x[i] > x[i - 1] && x[i] >= height {
+            let mut j = i;
+            while j + 1 < n && x[j + 1] == x[i] { j += 1; }
+            if j + 1 < n && x[j + 1] < x[i] { candidates.push((i + j) / 2); }
+            i = j + 1;
+        } else { i += 1; }
+    }
+    if distance <= 1 || candidates.is_empty() { return candidates; }
+    let mut by_h = candidates.clone();
+    by_h.sort_by(|&a, &b| x[b].partial_cmp(&x[a]).unwrap_or(std::cmp::Ordering::Equal));
+    let mut keep = vec![true; candidates.len()];
+    let idx_of: std::collections::HashMap<usize, usize> =
+        candidates.iter().enumerate().map(|(i, &v)| (v, i)).collect();
+    for &p in &by_h {
+        let pi = idx_of[&p];
+        if !keep[pi] { continue; }
+        for (qi, &q) in candidates.iter().enumerate() {
+            if qi != pi && keep[qi] && (q as isize - p as isize).unsigned_abs() < distance {
+                keep[qi] = false;
+            }
+        }
+    }
+    candidates.iter().zip(keep.iter()).filter(|&(_, &k)| k).map(|(&c, _)| c).collect()
+}
+
+fn slp_std(vals: &[f64]) -> f64 {
+    if vals.is_empty() { return 0.0; }
+    let mean = vals.iter().sum::<f64>() / vals.len() as f64;
+    let var = vals.iter().map(|&v| (v - mean).powi(2)).sum::<f64>() / vals.len() as f64;
+    var.sqrt()
+}
+
+fn slp_rmssd(rr: &[f64]) -> f64 {
+    if rr.len() < 2 { return f64::NAN; }
+    let sq: f64 = rr.windows(2).map(|w| (w[1] - w[0]).powi(2)).sum();
+    (sq / (rr.len() - 1) as f64).sqrt()
+}
+
+fn slp_percentile(mut vals: Vec<f64>, pct: f64) -> Option<f64> {
+    if vals.is_empty() { return None; }
+    vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let n = vals.len();
+    let idx = pct / 100.0 * (n - 1) as f64;
+    let lo = idx.floor() as usize;
+    let hi = (idx.ceil() as usize).min(n - 1);
+    if lo == hi { return Some(vals[lo]); }
+    Some(vals[lo] + (idx - lo as f64) * (vals[hi] - vals[lo]))
+}
+
+fn slp_stage_times(start: i64, end: i64, stages: &[Gen4StageSegment]) -> (f64, f64, f64, f64, f64, f64) {
+    let tib = (end - start) as f64;
+    let (mut wk, mut lt, mut dp, mut rm) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    for seg in stages {
+        let d = (seg.end_s - seg.start_s) as f64;
+        match seg.stage.as_str() {
+            "wake" => wk += d, "light" => lt += d, "deep" => dp += d, "rem" => rm += d, _ => {}
+        }
+    }
+    (tib, tib - wk, wk, lt, dp, rm)
+}
+
+fn slp_session_resting_hr(start: i64, end: i64, hr: &[(i64, i64)]) -> Option<f64> {
+    let seg: Vec<_> = hr.iter().filter(|&&(ts, _)| ts >= start && ts <= end).collect();
+    if seg.is_empty() { return None; }
+    let win_s: i64 = 5 * 60;
+    let mut means = Vec::new();
+    let mut t = start;
+    while t < end {
+        let win: Vec<f64> = seg.iter()
+            .filter(|&&&(ts, _)| ts >= t && ts < t + win_s)
+            .map(|&&(_, b)| b as f64).collect();
+        if !win.is_empty() { means.push(win.iter().sum::<f64>() / win.len() as f64); }
+        t += win_s;
+    }
+    means.iter().copied().reduce(f64::min)
+        .or_else(|| {
+            let all: Vec<f64> = seg.iter().map(|&&(_, b)| b as f64).collect();
+            Some(all.iter().sum::<f64>() / all.len() as f64)
+        })
+        .map(|v| (v * 10.0).round() / 10.0)
+}
+
+fn slp_session_avg_hrv(start: i64, end: i64, rr: &[(i64, i64)]) -> Option<f64> {
+    let seg: Vec<_> = rr
+        .iter()
+        .filter(|&&(ts_ms, _)| { let s = ts_ms / 1000; s >= start && s <= end })
+        .collect();
+    if seg.is_empty() { return None; }
+    let win_s: i64 = 5 * 60;
+    let mut vals = Vec::new();
+    let mut t = start;
+    while t < end {
+        let bucket: Vec<f64> = seg.iter()
+            .filter(|&&&(ts_ms, _)| { let s = ts_ms / 1000; s >= t && s < t + win_s })
+            .map(|&&(_, rr_ms)| rr_ms as f64).collect();
+        let filtered: Vec<f64> = bucket.into_iter().filter(|&v| v >= 300.0 && v <= 2500.0).collect();
+        if filtered.len() >= 2 {
+            let r = slp_rmssd(&filtered);
+            if r.is_finite() { vals.push(r); }
+        }
+        t += win_s;
+    }
+    if vals.is_empty() { return None; }
+    Some((vals.iter().sum::<f64>() / vals.len() as f64 * 10.0).round() / 10.0)
+}
+
+// ===========================================================================
+// Gen4 Recovery Score
+// Same formula as goose_recovery_v0 (metrics.rs), applied to Gen4 inputs.
+// Weights: HRV 35%, RHR 20%, sleep 15%, temp 10%, strain readiness 10%, resp 10%.
+// ===========================================================================
+
+#[derive(Debug, Serialize)]
+pub struct Gen4RecoveryResult {
+    pub score_0_to_100: f64,
+    pub hrv_rmssd_ms: f64,
+    pub hrv_baseline_ms: f64,
+    pub resting_hr_bpm: f64,
+    pub resting_hr_baseline_bpm: f64,
+    pub sleep_score: f64,
+    pub sleep_efficiency: f64,
+    pub sleep_tst_min: f64,
+    pub skin_temp_delta_c: f64,
+    pub prior_strain: f64,
+    pub component_hrv: f64,
+    pub component_rhr: f64,
+    pub component_sleep: f64,
+    pub component_temperature: f64,
+    pub component_strain: f64,
+}
+
+/// Compute Gen4 recovery score (0–100). Returns `None` when required baselines
+/// or current readings are unavailable or implausible.
+pub fn compute_gen4_recovery(
+    hrv_rmssd_ms: f64,
+    hrv_baseline_ms: f64,
+    resting_hr_bpm: f64,
+    resting_hr_baseline_bpm: f64,
+    sleep_efficiency: f64, // 0..1
+    sleep_tst_min: f64,
+    skin_temp_delta_c: f64,
+    prior_strain: f64, // 0..21
+) -> Option<Gen4RecoveryResult> {
+    if !hrv_rmssd_ms.is_finite() || hrv_rmssd_ms <= 0.0 { return None; }
+    if !hrv_baseline_ms.is_finite() || hrv_baseline_ms <= 0.0 { return None; }
+    if !resting_hr_bpm.is_finite() || resting_hr_bpm <= 0.0 { return None; }
+    if !resting_hr_baseline_bpm.is_finite() || resting_hr_baseline_bpm <= 0.0 { return None; }
+
+    let clamp = |v: f64| v.clamp(0.0, 100.0);
+
+    let hrv_score = clamp(70.0 + (hrv_rmssd_ms / hrv_baseline_ms - 1.0) * 100.0);
+    let rhr_score = clamp(70.0 + (resting_hr_baseline_bpm - resting_hr_bpm) * 5.0);
+    // Sleep score: 50% efficiency + 50% duration vs 8 h target
+    let sleep_score = clamp(
+        sleep_efficiency.clamp(0.0, 1.0) * 50.0
+            + (sleep_tst_min / 480.0).min(1.0) * 50.0,
+    );
+    let temperature_score = clamp(100.0 - skin_temp_delta_c.abs() * 50.0);
+    let strain_score = clamp(100.0 - prior_strain.clamp(0.0, 21.0) / 21.0 * 60.0);
+    // Respiratory contribution is neutral (10%) until calibrated resp rate is available
+    let respiratory_score = 100.0_f64;
+
+    let total = hrv_score * 0.35
+        + rhr_score * 0.20
+        + sleep_score * 0.15
+        + temperature_score * 0.10
+        + strain_score * 0.10
+        + respiratory_score * 0.10;
+
+    let r = |v: f64| (v * 10.0).round() / 10.0;
+    Some(Gen4RecoveryResult {
+        score_0_to_100: r(total),
+        hrv_rmssd_ms: r(hrv_rmssd_ms),
+        hrv_baseline_ms: r(hrv_baseline_ms),
+        resting_hr_bpm: r(resting_hr_bpm),
+        resting_hr_baseline_bpm: r(resting_hr_baseline_bpm),
+        sleep_score: r(sleep_score),
+        sleep_efficiency,
+        sleep_tst_min: r(sleep_tst_min),
+        skin_temp_delta_c: r(skin_temp_delta_c),
+        prior_strain: r(prior_strain),
+        component_hrv: r(hrv_score),
+        component_rhr: r(rhr_score),
+        component_sleep: r(sleep_score),
+        component_temperature: r(temperature_score),
+        component_strain: r(strain_score),
     })
 }
 

@@ -110,6 +110,7 @@ final class GooseAppModel: ObservableObject {
   var overnightGuardCriticalBackgroundTaskID: UIBackgroundTaskIdentifier = .invalid
   var overnightGuardCriticalBackgroundTaskReason: String?
   var overnightGuardStartedHealthCapture = false
+  var overnightGuardStartedGen4Ppg = false
   var overnightGuardTargetCounts = OvernightGuardTargetCounts()
   var overnightGuardHistoricalOrder = OvernightGuardHistoricalOrderEvidence()
   var overnightGuardPowerWarning: String?

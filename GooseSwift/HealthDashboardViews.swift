@@ -592,6 +592,12 @@ struct PacketHealthView: View {
         if !store.restingHeartRateFeatureProvenanceSummary().isEmpty {
           HealthInfoRow(row: HealthSummaryRow("Resting HR provenance", value: store.restingHeartRateFeatureProvenanceSummary(), source: store.packetInputSource("metrics.resting_hr_features"), systemImage: "doc.text.magnifyingglass"))
         }
+        if model.ble.activeDeviceGeneration == .gen4 {
+          HealthInfoRow(row: HealthSummaryRow("Strain (Gen4)", value: gen4StrainSummary(model.ble.gen4StrainScore, updatedAt: model.ble.gen4StrainUpdatedAt), source: model.ble.gen4StrainScore == nil ? .unavailable("strain requires HR sync") : .live("gen4.strain"), systemImage: "figure.run"))
+          HealthInfoRow(row: HealthSummaryRow("Skin Temp Δ (Gen4)", value: gen4SkinTempSummary(model.ble.gen4SkinTempDeltaRaw, deltaCApprox: model.ble.gen4SkinTempDeltaCApprox, updatedAt: model.ble.gen4SkinTempUpdatedAt), source: model.ble.gen4SkinTempDeltaRaw == nil ? .unavailable("requires K25 history") : .live("gen4.skin_temp"), systemImage: "thermometer.medium"))
+          HealthInfoRow(row: HealthSummaryRow("Sleep (Gen4)", value: gen4SleepSummary(model.ble.gen4SleepSessions, updatedAt: model.ble.gen4SleepUpdatedAt), source: model.ble.gen4SleepSessions == nil ? .unavailable("requires HR+gravity sync") : .live("gen4.sleep"), systemImage: "bed.double"))
+          HealthInfoRow(row: HealthSummaryRow("Recovery (Gen4)", value: gen4RecoverySummary(model.ble.gen4RecoveryScore, components: model.ble.gen4RecoveryComponents, updatedAt: model.ble.gen4RecoveryUpdatedAt), source: model.ble.gen4RecoveryScore == nil ? .unavailable("requires HRV + resting HR baseline") : .live("gen4.recovery"), systemImage: "battery.100percent.bolt"))
+        }
         HealthInfoRow(row: HealthSummaryRow("Energy", value: store.energyRollupSummary(), source: store.whoopActiveCaloriesSource(), systemImage: "flame.fill"))
         if !store.energyRollupProvenanceSummary().isEmpty {
           HealthInfoRow(row: HealthSummaryRow("Energy provenance", value: store.energyRollupProvenanceSummary(), source: store.whoopActiveCaloriesSource(), systemImage: "doc.text.magnifyingglass"))
@@ -646,4 +652,72 @@ struct PacketHealthView: View {
     .gooseListBackground()
     .navigationTitle("Packet Inputs")
   }
+}
+
+private func gen4RecoverySummary(_ score: Double?, components: [String: Double]?, updatedAt: Date?) -> String {
+  guard let score else { return "—" }
+  var parts = [String(format: "%.0f%%", score)]
+  if let comps = components {
+    let detail = ["hrv", "rhr", "sleep", "temperature", "strain"]
+      .compactMap { key -> String? in
+        guard let v = comps[key] else { return nil }
+        return "\(key) \(String(format: "%.0f", v))"
+      }
+      .joined(separator: " · ")
+    if !detail.isEmpty { parts.append(detail) }
+  }
+  return parts.joined(separator: "\n")
+}
+
+private func gen4SleepSummary(_ sessions: [[String: Any]]?, updatedAt: Date?) -> String {
+  guard let sessions, !sessions.isEmpty else { return "—" }
+  // Show the most recent session (last in array, sessions are sorted chronologically)
+  let session = sessions.last!
+  let tibMin = session["tib_min"] as? Double ?? 0
+  let tstMin = session["tst_min"] as? Double ?? 0
+  let efficiency = session["efficiency"] as? Double ?? 0
+  let deepMin = session["deep_min"] as? Double ?? 0
+  let remMin = session["rem_min"] as? Double ?? 0
+  let lightMin = session["light_min"] as? Double ?? 0
+
+  func fmt(_ minutes: Double) -> String {
+    let h = Int(minutes) / 60
+    let m = Int(minutes) % 60
+    return h > 0 ? "\(h)h \(m)m" : "\(m)m"
+  }
+
+  let effPct = Int((efficiency * 100).rounded())
+  var parts = ["\(fmt(tstMin)) / \(fmt(tibMin)) (\(effPct)%)"]
+  if deepMin > 0 || remMin > 0 || lightMin > 0 {
+    parts.append("deep \(fmt(deepMin)) · REM \(fmt(remMin)) · light \(fmt(lightMin))")
+  }
+  if sessions.count > 1 { parts.append("\(sessions.count) sessions") }
+  return parts.joined(separator: "\n")
+}
+
+private func gen4StrainSummary(_ score: Double?, updatedAt: Date?) -> String {
+  guard let score else { return "—" }
+  let scoreStr = String(format: "%.1f / 21.0", score)
+  if let updatedAt {
+    let formatter = RelativeDateTimeFormatter()
+    formatter.unitsStyle = .abbreviated
+    return "\(scoreStr) · \(formatter.localizedString(for: updatedAt, relativeTo: Date()))"
+  }
+  return scoreStr
+}
+
+private func gen4SkinTempSummary(_ deltaRaw: Double?, deltaCApprox: Double?, updatedAt: Date?) -> String {
+  guard let deltaRaw else { return "—" }
+  var parts: [String] = []
+  if let deltaCApprox {
+    let sign = deltaCApprox >= 0 ? "+" : ""
+    parts.append("\(sign)\(String(format: "%.2f", deltaCApprox))°C (approx)")
+  }
+  parts.append("Δraw \(Int(deltaRaw))")
+  if let updatedAt {
+    let formatter = RelativeDateTimeFormatter()
+    formatter.unitsStyle = .abbreviated
+    parts.append(formatter.localizedString(for: updatedAt, relativeTo: Date()))
+  }
+  return parts.joined(separator: " · ")
 }

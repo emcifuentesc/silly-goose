@@ -23,6 +23,13 @@ final class HealthDataStore: ObservableObject {
   @Published var heartRateTimelineStatus = "No HR samples stored"
   @Published var gen4HistoryRecords: [[String: Any]] = []
   @Published var gen4HistoryStatus = "No Gen4 history loaded"
+  @Published var gen4IsActive = false
+  @Published var gen4SleepSessions: [[String: Any]]? = nil
+  @Published var gen4RecoveryScore: Double? = nil
+  @Published var gen4RecoveryComponents: [String: Double]? = nil
+  @Published var gen4StrainScore: Double? = nil
+  @Published var gen4SkinTempDeltaC: Double? = nil
+  @Published var gen4RestingHRBpm: Double? = nil
 
   let bridge = GooseRustBridge()
   let heartRateSeriesStore = HeartRateSeriesStore.shared
@@ -287,5 +294,17 @@ final class HealthDataStore: ObservableObject {
       self.runSleepScore()
       self.bandSleepImportStatus = "Band sync captured \(packetCount) packets | \(self.packetScoreStatus)"
     }
+  }
+
+  func applyGen4State(from ble: GooseBLEClient) {
+    gen4IsActive = ble.activeDeviceGeneration == .gen4
+    gen4SleepSessions = ble.gen4SleepSessions
+    gen4RecoveryScore = ble.gen4RecoveryScore
+    gen4RecoveryComponents = ble.gen4RecoveryComponents
+    gen4StrainScore = ble.gen4StrainScore
+    gen4SkinTempDeltaC = ble.gen4SkinTempDeltaCApprox
+    gen4RestingHRBpm = gen4SleepSessions?
+      .compactMap { $0["resting_hr_bpm"] as? Double }
+      .last
   }
 }

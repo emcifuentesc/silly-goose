@@ -6429,6 +6429,28 @@ impl GooseStore {
         Ok(count)
     }
 
+    /// Query (ts, heart_rate) pairs from gen4_history_samples ordered by ascending ts.
+    pub fn query_gen4_hr_series_with_ts(
+        &self,
+        device_id: &str,
+        from_s: i64,
+        to_s: i64,
+    ) -> GooseResult<Vec<(i64, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT ts, heart_rate FROM gen4_history_samples
+              WHERE device_id = ?1 AND ts >= ?2 AND ts <= ?3
+                AND heart_rate IS NOT NULL
+              ORDER BY ts ASC",
+        )?;
+        let result = stmt
+            .query_map(params![device_id, from_s, to_s], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(result)
+    }
+
     /// Query heart_rate values from gen4_history_samples ordered by ascending ts (Unix seconds).
     pub fn query_gen4_hr_series(
         &self,
@@ -6462,6 +6484,60 @@ impl GooseStore {
         Ok(result)
     }
 
+    /// Query skin_temp_raw values from gen4_k25_samples ordered by ascending ts.
+    pub fn query_gen4_skin_temp_series(
+        &self,
+        device_id: &str,
+        from_s: i64,
+        to_s: i64,
+    ) -> GooseResult<Vec<i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT skin_temp_raw FROM gen4_k25_samples
+              WHERE device_id = ?1 AND ts >= ?2 AND ts <= ?3
+                AND skin_temp_raw IS NOT NULL
+              ORDER BY ts ASC",
+        )?;
+        let result = stmt
+            .query_map(params![device_id, from_s, to_s], |row| row.get::<_, i64>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(result)
+    }
+
+    /// Query K25 IMU samples as raw-count gravity triples.
+    /// Each K25 frame stores 24 i16 values = 8 XYZ triples at ~8 Hz.
+    /// Returns (ts_s, x_raw, y_raw, z_raw) for every sub-sample — all 8 share the frame ts.
+    pub fn query_gen4_k25_imu(
+        &self,
+        device_id: &str,
+        from_s: i64,
+        to_s: i64,
+    ) -> GooseResult<Vec<(i64, i64, i64, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT ts, imu_json FROM gen4_k25_samples
+              WHERE device_id = ?1 AND ts >= ?2 AND ts <= ?3
+                AND imu_json != '[]'
+              ORDER BY ts ASC",
+        )?;
+        let mut out = Vec::new();
+        let rows = stmt.query_map(params![device_id, from_s, to_s], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows.filter_map(|r| r.ok()) {
+            let (ts, json) = row;
+            let vals: Vec<i64> = serde_json::from_str(&json).unwrap_or_default();
+            // Each frame: [x0,y0,z0, x1,y1,z1, ..., x7,y7,z7]
+            let n_triples = vals.len() / 3;
+            for i in 0..n_triples {
+                let x = vals[i * 3];
+                let y = vals[i * 3 + 1];
+                let z = vals[i * 3 + 2];
+                out.push((ts, x, y, z));
+            }
+        }
+        Ok(out)
+    }
+
     /// Query valid RR intervals (300–2500 ms) from gen4_ppg_beats ordered by ts_ms.
     pub fn query_gen4_ppg_beats_rr(
         &self,
@@ -6477,6 +6553,28 @@ impl GooseStore {
         )?;
         let result = stmt
             .query_map(params![device_id, from_ms, to_ms], |row| row.get::<_, i64>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(result)
+    }
+
+    /// Query valid RR intervals with timestamps from gen4_ppg_beats.
+    pub fn query_gen4_ppg_beats_with_ts(
+        &self,
+        device_id: &str,
+        from_ms: i64,
+        to_ms: i64,
+    ) -> GooseResult<Vec<(i64, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT ts_ms, rr_ms FROM gen4_ppg_beats
+              WHERE device_id = ?1 AND ts_ms >= ?2 AND ts_ms <= ?3
+                AND rr_ms >= 300 AND rr_ms <= 2500
+              ORDER BY ts_ms ASC",
+        )?;
+        let result = stmt
+            .query_map(params![device_id, from_ms, to_ms], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            })?
             .filter_map(|r| r.ok())
             .collect();
         Ok(result)

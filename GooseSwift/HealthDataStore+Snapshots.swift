@@ -168,6 +168,35 @@ extension HealthDataStore {
     if let index = snapshots.firstIndex(where: { $0.id == "health-sleep" }) {
       snapshots[index] = sleepHealthMonitorSnapshot(base: snapshots[index])
     }
+    if gen4IsActive {
+      if let rhr = gen4RestingHRBpm,
+         let index = snapshots.firstIndex(where: { $0.id == "resting-hr" }) {
+        snapshots[index] = replacingHealthMonitorSnapshot(
+          snapshots[index],
+          value: Self.numberText(rhr, fractionDigits: 0) ?? "--",
+          unit: "bpm",
+          status: "Sleep resting HR",
+          freshness: "Last night",
+          provenance: "gen4.sleep session",
+          source: .bridge("goose.gen4.sleep"),
+          trend: snapshots[index].trend
+        )
+      }
+      if let deltaC = gen4SkinTempDeltaC,
+         let index = snapshots.firstIndex(where: { $0.id == "wrist-temperature" }) {
+        let sign = deltaC >= 0 ? "+" : ""
+        snapshots[index] = replacingHealthMonitorSnapshot(
+          snapshots[index],
+          value: "\(sign)\(String(format: "%.1f", deltaC))",
+          unit: "°C",
+          status: abs(deltaC) < 0.5 ? "Normal range" : (deltaC > 0 ? "Above baseline" : "Below baseline"),
+          freshness: "Latest",
+          provenance: "gen4.skin_temp",
+          source: .bridge("goose.gen4.skin_temp"),
+          trend: snapshots[index].trend
+        )
+      }
+    }
     return snapshots
   }
 
@@ -227,6 +256,18 @@ extension HealthDataStore {
   }
 
   func sleepSnapshot(base snapshot: HealthMetricSnapshot) -> HealthMetricSnapshot {
+    if gen4IsActive, let session = gen4SleepSessions?.last {
+      let tstMin = (session["tst_min"] as? Double) ?? 0
+      let efficiency = (session["efficiency"] as? Double) ?? 0
+      let scoreText = Self.numberText(efficiency * 100.0, fractionDigits: 0) ?? "--"
+      return HealthMetricSnapshot(
+        id: snapshot.id, route: snapshot.route, group: snapshot.group, title: snapshot.title,
+        value: scoreText, unit: "%",
+        status: "\(Self.minutesText(tstMin)) · \(Self.sleepQualityLabel(score: efficiency * 100.0))",
+        freshness: "Last night", provenance: "gen4.sleep",
+        source: .bridge("goose.gen4.sleep"), systemImage: snapshot.systemImage, tint: snapshot.tint, trend: snapshot.trend
+      )
+    }
     if let output = Self.map(packetScoreReports["sleep"], "score_result", "output") {
       let scoreText = Self.numberText(output["score_0_to_100"], fractionDigits: 0) ?? snapshot.value
       return HealthMetricSnapshot(
@@ -266,6 +307,17 @@ extension HealthDataStore {
   }
 
   func sleepHealthMonitorSnapshot(base snapshot: HealthMetricSnapshot) -> HealthMetricSnapshot {
+    if gen4IsActive, let session = gen4SleepSessions?.last {
+      let tstMin = (session["tst_min"] as? Double) ?? 0
+      let efficiency = (session["efficiency"] as? Double) ?? 0
+      return HealthMetricSnapshot(
+        id: snapshot.id, route: snapshot.route, group: snapshot.group, title: snapshot.title,
+        value: Self.minutesText(tstMin), unit: "",
+        status: Self.sleepQualityLabel(score: efficiency * 100.0),
+        freshness: "Last night", provenance: "gen4.sleep",
+        source: .bridge("goose.gen4.sleep"), systemImage: snapshot.systemImage, tint: snapshot.tint, trend: snapshot.trend
+      )
+    }
     if let primarySleepDetail {
       return HealthMetricSnapshot(
         id: snapshot.id,
@@ -305,6 +357,17 @@ extension HealthDataStore {
   }
 
   func recoverySnapshot(base snapshot: HealthMetricSnapshot) -> HealthMetricSnapshot {
+    if gen4IsActive, let score = gen4RecoveryScore,
+       let scoreText = Self.numberText(score, fractionDigits: 0) {
+      return HealthMetricSnapshot(
+        id: snapshot.id, route: snapshot.route, group: snapshot.group, title: snapshot.title,
+        value: scoreText, unit: "%",
+        status: Self.recoveryQualityLabel(score: score),
+        freshness: "Latest", provenance: "gen4.recovery",
+        source: .bridge("goose.gen4.recovery"), systemImage: snapshot.systemImage, tint: snapshot.tint,
+        trend: recoveryScoreTrend(base: snapshot.trend, currentScore: score)
+      )
+    }
     guard !usesPreviewPacketData,
           let score = recoveryScoreValue(),
           let scoreText = Self.numberText(score, fractionDigits: 0) else {
