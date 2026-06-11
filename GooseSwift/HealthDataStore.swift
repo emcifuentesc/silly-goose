@@ -21,6 +21,8 @@ final class HealthDataStore: ObservableObject {
   @Published var calibrationRunComplete = false
   @Published var heartRateHourlyRanges: [HeartRateHourlyRange] = []
   @Published var heartRateTimelineStatus = "No HR samples stored"
+  @Published var gen4HistoryRecords: [[String: Any]] = []
+  @Published var gen4HistoryStatus = "No Gen4 history loaded"
 
   let bridge = GooseRustBridge()
   let heartRateSeriesStore = HeartRateSeriesStore.shared
@@ -149,6 +151,37 @@ final class HealthDataStore: ObservableObject {
         source: .live("BLE heart-rate sample store"),
         systemImage: "heart"
       )
+    }
+  }
+
+  func refreshGen4History(days: Int = 14) {
+    let dbPath = databasePath
+    let bridge = self.bridge
+    let endTs = Int64(Date().timeIntervalSince1970)
+    let startTs = endTs - Int64(days * 86400)
+    heartRateTimelineQueue.async { [weak self] in
+      do {
+        let response = try bridge.request(
+          method: "gen4.all_history_samples",
+          args: [
+            "database_path": dbPath,
+            "start_ts": startTs,
+            "end_ts": endTs,
+          ]
+        )
+        let records = (response["records"] as? [[String: Any]]) ?? []
+        let count = records.count
+        Task { @MainActor in
+          self?.gen4HistoryRecords = records
+          self?.gen4HistoryStatus = count > 0
+            ? "\(count) records · last \(days) days"
+            : "No records in the last \(days) days"
+        }
+      } catch {
+        Task { @MainActor in
+          self?.gen4HistoryStatus = "Query failed: \(error)"
+        }
+      }
     }
   }
 

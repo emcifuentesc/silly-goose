@@ -70,6 +70,7 @@
 		C10000000000000000000108 /* HealthDataStore+Sleep.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000108 /* HealthDataStore+Sleep.swift */; };
 		C10000000000000000000109 /* HealthDataStore+Utilities.swift in Sources */ = {isa = PBXBuildFile; fileRef = C20000000000000000000109 /* HealthDataStore+Utilities.swift */; };
 		C1000000000000000000010A /* HealthDataStore+StaticSnapshots.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000010A /* HealthDataStore+StaticSnapshots.swift */; };
+		C1000000000000000000010B /* Gen4HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C2000000000000000000010B /* Gen4HistoryView.swift */; };
 		D10000000000000000000001 /* MoreRouteModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000001 /* MoreRouteModels.swift */; };
 		D10000000000000000000002 /* MoreProfileViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000002 /* MoreProfileViews.swift */; };
 		D10000000000000000000003 /* MoreDataStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000003 /* MoreDataStore.swift */; };
@@ -241,6 +242,7 @@
 		C20000000000000000000108 /* HealthDataStore+Sleep.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HealthDataStore+Sleep.swift"; sourceTree = "<group>"; };
 		C20000000000000000000109 /* HealthDataStore+Utilities.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HealthDataStore+Utilities.swift"; sourceTree = "<group>"; };
 		C2000000000000000000010A /* HealthDataStore+StaticSnapshots.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "HealthDataStore+StaticSnapshots.swift"; sourceTree = "<group>"; };
+		C2000000000000000000010B /* Gen4HistoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Gen4HistoryView.swift; sourceTree = "<group>"; };
 		D20000000000000000000001 /* MoreRouteModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoreRouteModels.swift; sourceTree = "<group>"; };
 		D20000000000000000000002 /* MoreProfileViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoreProfileViews.swift; sourceTree = "<group>"; };
 		D20000000000000000000003 /* MoreDataStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoreDataStore.swift; sourceTree = "<group>"; };
@@ -442,6 +444,7 @@
 				C20000000000000000000108 /* HealthDataStore+Sleep.swift */,
 				C20000000000000000000109 /* HealthDataStore+Utilities.swift */,
 				C2000000000000000000010A /* HealthDataStore+StaticSnapshots.swift */,
+				C2000000000000000000010B /* Gen4HistoryView.swift */,
 				C20000000000000000000005 /* HealthDashboardViews.swift */,
 				C20000000000000000000006 /* HealthRecoveryStressViews.swift */,
 				C20000000000000000000007 /* HealthMetricFamilyStrainViews.swift */,
@@ -725,6 +728,7 @@
 				C10000000000000000000108 /* HealthDataStore+Sleep.swift in Sources */,
 				C10000000000000000000109 /* HealthDataStore+Utilities.swift in Sources */,
 				C1000000000000000000010A /* HealthDataStore+StaticSnapshots.swift in Sources */,
+				C1000000000000000000010B /* Gen4HistoryView.swift in Sources */,
 				C10000000000000000000005 /* HealthDashboardViews.swift in Sources */,
 				C10000000000000000000006 /* HealthRecoveryStressViews.swift in Sources */,
 				C10000000000000000000007 /* HealthMetricFamilyStrainViews.swift in Sources */,
@@ -947,6 +951,7 @@
 					"$(SRCROOT)/Rust/core/include",
 				);
 				INFOPLIST_FILE = GooseSwift/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Silly Goose";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.sports";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -991,6 +996,7 @@
 					"$(SRCROOT)/Rust/core/include",
 				);
 				INFOPLIST_FILE = GooseSwift/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Silly Goose";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.sports";
 				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (

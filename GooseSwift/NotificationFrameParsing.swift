@@ -94,6 +94,9 @@ struct NotificationFrameCompactSummary {
   let eventID: Int?
   let eventName: String?
   let eventByteCount: Int?
+  let batteryPercent: Double?
+  let batteryMillivolts: Int?
+  let batteryCharging: Bool?
   let movement: Movement?
 
   init(raw: [String: Any]) {
@@ -122,6 +125,9 @@ struct NotificationFrameCompactSummary {
     eventID = NotificationFrameParser.intValue(raw["event_id"])
     eventName = raw["event_name"] as? String
     eventByteCount = NotificationFrameParser.intValue(raw["event_byte_count"])
+    batteryPercent = NotificationFrameParser.doubleValue(raw["battery_pct"])
+    batteryMillivolts = NotificationFrameParser.intValue(raw["battery_mV"])
+    batteryCharging = raw["battery_charging"] as? Bool
     movement = (raw["movement"] as? [String: Any]).flatMap(Movement.init(raw:))
   }
 }
@@ -135,6 +141,8 @@ struct NotificationFrameInterpretation {
   let movementSample: MovementPacketSample?
   let whoopEvent: WhoopEventSample?
   let dataSignal: WhoopDataSignalSample?
+  let batteryPercent: Double?
+  let batteryCharging: Bool?
 }
 
 struct ParsedNotificationFrameResult {

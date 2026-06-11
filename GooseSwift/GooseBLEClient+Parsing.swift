@@ -127,6 +127,9 @@ extension GooseBLEClient {
   ) -> Bool {
     switch characteristic.uuid {
     case batteryLevelCharacteristicID:
+      // Gen4 (WHOOP 4.0): 2A19 always returns 100 regardless of actual charge. Battery comes
+      // from BATTERY_LEVEL events decoded in the Gen4 notification pipeline instead.
+      guard activeDeviceGeneration != .gen4 else { return true }
       guard let raw = value.first else {
         record(level: .warn, source: "ble.metadata", title: "battery.read.empty")
         return true
@@ -134,6 +137,7 @@ extension GooseBLEClient {
       applyBatteryLevel(Int(raw), capturedAt: capturedAt, sourceTitle: "battery.read")
       return true
     case batteryLevelStatusCharacteristicID:
+      guard activeDeviceGeneration != .gen4 else { return true }
       guard let status = Self.parseBatteryLevelStatus(value) else {
         record(level: .warn, source: "ble.metadata", title: "battery.status.parse_failed", body: value.hexString)
         return true

@@ -78,6 +78,36 @@ fn extract_historical_streams_method_yields_biometric_series() {
 }
 
 #[test]
+fn ingest_and_query_history_methods_persist_biometrics() {
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("gen4.sqlite");
+    let db_path = db.to_str().unwrap();
+    let frames = frame_hexes();
+
+    let ingest = call(
+        "gen4.ingest_history",
+        json!({ "database_path": db_path, "device_id": "whoop4", "frames": frames }),
+    );
+    assert!(ingest["ok"].as_bool().unwrap(), "{ingest}");
+    assert_eq!(ingest["result"]["records_written"].as_u64().unwrap(), 60);
+
+    let query = call(
+        "gen4.history_samples",
+        json!({
+            "database_path": db_path, "device_id": "whoop4",
+            "start_ts": 1_700_000_000_i64, "end_ts": 1_700_000_059_i64
+        }),
+    );
+    assert!(query["ok"].as_bool().unwrap(), "{query}");
+    assert_eq!(query["result"]["count"].as_u64().unwrap(), 60);
+    let first = &query["result"]["records"][0];
+    assert_eq!(first["ts"], 1_700_000_000_i64);
+    assert_eq!(first["heart_rate"], 60);
+    assert_eq!(first["spo2_red"], 18000);
+    assert_eq!(first["rr_intervals_ms"], json!([1000]));
+}
+
+#[test]
 fn extract_streams_method_yields_realtime_hr_and_battery() {
     let frames = frame_hexes();
     let resp = call(

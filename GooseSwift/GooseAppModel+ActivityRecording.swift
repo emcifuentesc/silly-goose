@@ -316,6 +316,7 @@ extension GooseAppModel {
         stopHealthPacketCapture(reason: "activity_finished")
       } else if sessionDetectionMethod == "user_assigned", activeHealthPacketCapture == nil {
         ble.stopMovementHeartRateCapture()
+        gen4PpgAccumulator.flush(deviceID: ble.activeDeviceIdentifier?.uuidString ?? "")
       }
     } catch {
       activityPersistenceStatus = "Activity store failed"
@@ -324,6 +325,7 @@ extension GooseAppModel {
         stopHealthPacketCapture(reason: "activity_store_failed")
       } else if sessionDetectionMethod == "user_assigned", activeHealthPacketCapture == nil {
         ble.stopMovementHeartRateCapture()
+        gen4PpgAccumulator.flush(deviceID: ble.activeDeviceIdentifier?.uuidString ?? "")
       }
     }
   }

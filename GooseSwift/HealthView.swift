@@ -36,7 +36,7 @@ struct HealthView: View {
 
         HealthRouteShortcutSection(
           title: "Data & Algorithms",
-          snapshots: snapshots(for: [.packetInputs, .algorithms, .calibration])
+          snapshots: snapshots(for: [.packetInputs, .algorithms, .calibration, .gen4History])
         )
       }
       .padding(.horizontal, 16)
@@ -110,5 +110,6 @@ struct HealthView: View {
     store.refreshBridgeCatalogs()
     store.refreshHeartRateTimeline()
     store.refreshPacketInputsIfNeeded()
+    store.refreshGen4History()
   }
 }

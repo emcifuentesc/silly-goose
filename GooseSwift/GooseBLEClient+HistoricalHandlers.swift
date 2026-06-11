@@ -654,6 +654,8 @@ extension GooseBLEClient {
     lastSyncAt = completedAt
     let detail = rangeOnly
       ? "Historical range poll complete"
+      : sawHistoricalMetadata && historicalPacketsReceivedThisSync == 0 && activeDeviceGeneration == .gen4
+      ? "Historical sync complete (K24 data captured via pipeline)"
       : sawHistoricalMetadata && historicalPacketsReceivedThisSync == 0
       ? "Historical metadata captured but no packet bodies received"
       : historicalPacketsReceivedThisSync == 0

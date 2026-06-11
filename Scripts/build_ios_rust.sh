@@ -6,6 +6,15 @@ APP_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CORE_DIR="$APP_DIR/Rust/core"
 RUST_DIR="$APP_DIR/Rust"
 
+# Xcode's build-phase PATH does not include the Rust toolchain, so building from the Xcode GUI
+# otherwise fails with "cargo: command not found" whenever the Rust core must rebuild. Make cargo
+# discoverable whether it was installed via rustup (~/.cargo) or Homebrew.
+if [ -f "$HOME/.cargo/env" ]; then
+  # shellcheck disable=SC1091
+  . "$HOME/.cargo/env"
+fi
+export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 if [[ "${GOOSE_SKIP_RUST_CORE_BUILD:-0}" == "1" ]]; then
   echo "Skipping Goose Rust core build because GOOSE_SKIP_RUST_CORE_BUILD=1"
   exit 0

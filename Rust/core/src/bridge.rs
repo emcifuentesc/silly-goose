@@ -232,6 +232,77 @@ struct Gen4StreamArgs {
     wall_clock_ref: i64,
 }
 
+/// Decode WHOOP 4.0 historical (type-47) frames into biometric records and persist them
+/// (one row per record, keyed by ts; idempotent upsert).
+#[derive(Debug, Clone, Deserialize)]
+struct Gen4IngestHistoryArgs {
+    database_path: String,
+    device_id: String,
+    frames: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Gen4HistoryQueryArgs {
+    database_path: String,
+    device_id: String,
+    start_ts: i64,
+    end_ts: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Gen4AllHistoryQueryArgs {
+    database_path: String,
+    start_ts: i64,
+    end_ts: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Gen4Spo2Args {
+    database_path: String,
+    device_id: String,
+    start_ts: i64,
+    end_ts: i64,
+    #[serde(default = "default_spo2_window")]
+    window: usize,
+}
+
+fn default_spo2_window() -> usize { 15 }
+
+#[derive(Debug, Clone, Deserialize)]
+struct Gen4PpgPacketInput {
+    hex: String,
+    received_ms: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Gen4IngestPpgArgs {
+    database_path: String,
+    device_id: String,
+    packets: Vec<Gen4PpgPacketInput>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Gen4RestingHrArgs {
+    database_path: String,
+    device_id: String,
+    #[serde(default = "default_resting_hr_lookback_s")]
+    lookback_s: i64,
+}
+fn default_resting_hr_lookback_s() -> i64 {
+    86400
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Gen4HrvRmssdArgs {
+    database_path: String,
+    device_id: String,
+    #[serde(default = "default_hrv_window_ms")]
+    window_ms: i64,
+}
+fn default_hrv_window_ms() -> i64 {
+    300_000 // 5 minutes
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct TimelineArgs {
     decoded_frames: Vec<DecodedFrameRow>,
@@ -2498,6 +2569,34 @@ fn handle_bridge_request_inner(request: BridgeRequest) -> BridgeResponse {
             .and_then(gen4_extract_historical_streams_bridge)
             .map(|value| bridge_ok(&request.request_id, value))
             .unwrap_or_else(|error| bridge_error(&request.request_id, "method_error", error)),
+        "gen4.ingest_history" => request_args::<Gen4IngestHistoryArgs>(&request)
+            .and_then(gen4_ingest_history_bridge)
+            .map(|value| bridge_ok(&request.request_id, value))
+            .unwrap_or_else(|error| bridge_error(&request.request_id, "method_error", error)),
+        "gen4.history_samples" => request_args::<Gen4HistoryQueryArgs>(&request)
+            .and_then(gen4_history_samples_bridge)
+            .map(|value| bridge_ok(&request.request_id, value))
+            .unwrap_or_else(|error| bridge_error(&request.request_id, "method_error", error)),
+        "gen4.all_history_samples" => request_args::<Gen4AllHistoryQueryArgs>(&request)
+            .and_then(gen4_all_history_samples_bridge)
+            .map(|value| bridge_ok(&request.request_id, value))
+            .unwrap_or_else(|error| bridge_error(&request.request_id, "method_error", error)),
+        "gen4.ingest_ppg" => request_args::<Gen4IngestPpgArgs>(&request)
+            .and_then(gen4_ingest_ppg_bridge)
+            .map(|value| bridge_ok(&request.request_id, value))
+            .unwrap_or_else(|error| bridge_error(&request.request_id, "method_error", error)),
+        "gen4.resting_hr" => request_args::<Gen4RestingHrArgs>(&request)
+            .and_then(gen4_resting_hr_bridge)
+            .map(|value| bridge_ok(&request.request_id, value))
+            .unwrap_or_else(|error| bridge_error(&request.request_id, "method_error", error)),
+        "gen4.hrv_rmssd" => request_args::<Gen4HrvRmssdArgs>(&request)
+            .and_then(gen4_hrv_rmssd_bridge)
+            .map(|value| bridge_ok(&request.request_id, value))
+            .unwrap_or_else(|error| bridge_error(&request.request_id, "method_error", error)),
+        "gen4.spo2_series" => request_args::<Gen4Spo2Args>(&request)
+            .and_then(gen4_spo2_series_bridge)
+            .map(|value| bridge_ok(&request.request_id, value))
+            .unwrap_or_else(|error| bridge_error(&request.request_id, "method_error", error)),
         "timeline.from_decoded_frames" => request_args::<TimelineArgs>(&request)
             .and_then(timeline_from_decoded_frames_bridge)
             .map(|value| bridge_ok(&request.request_id, value))
@@ -2640,6 +2739,179 @@ fn gen4_extract_historical_streams_bridge(args: Gen4StreamArgs) -> GooseResult<s
         .map_err(|error| GooseError::message(format!("cannot serialize gen4 streams: {error}")))
 }
 
+fn gen4_ingest_history_bridge(args: Gen4IngestHistoryArgs) -> GooseResult<serde_json::Value> {
+    let decoded = args
+        .frames
+        .iter()
+        .map(|hex| crate::gen4::decode_frame_hex(hex))
+        .collect::<GooseResult<Vec<_>>>()?;
+    // Count by type_name so the Swift side can log what actually arrived during the sync.
+    let mut frame_type_counts: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    // Collect unique console log lines (capped) so firmware diagnostics are visible in Swift logs.
+    let mut console_logs: Vec<String> = Vec::new();
+    let mut seen_logs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for frame in &decoded {
+        *frame_type_counts.entry(frame.type_name.clone()).or_insert(0) += 1;
+        if frame.type_name == "CONSOLE_LOGS" && console_logs.len() < 30 {
+            if let Some(serde_json::Value::String(s)) = frame.parsed.get("log") {
+                let line = s.trim().to_string();
+                if !line.is_empty() && seen_logs.insert(line.clone()) {
+                    console_logs.push(line);
+                }
+            }
+        }
+    }
+    // Collect up to 3 sample frames from unrecognised HISTORICAL_DATA versions (e.g. K25/K26)
+    // so the Swift side can log raw hex bytes for layout analysis.
+    let known_hist_versions: &[i64] = &[5, 7, 9, 12, 24, 25, 26];
+    let mut unknown_version_samples: Vec<serde_json::Value> = Vec::new();
+    for (frame, hex) in decoded.iter().zip(args.frames.iter()) {
+        if frame.type_name == "HISTORICAL_DATA" && unknown_version_samples.len() < 3 {
+            if let Some(v) = frame.parsed.get("hist_version").and_then(|v| v.as_i64()) {
+                if !known_hist_versions.contains(&v) {
+                    unknown_version_samples.push(json!({ "version": v, "hex": hex }));
+                }
+            }
+        }
+    }
+    let records = crate::gen4::decode_history_records(&decoded);
+    let k25_records = crate::gen4::decode_k25_records(&decoded);
+    let store = open_bridge_store(&args.database_path)?;
+    let written = store.insert_gen4_history_records(&args.device_id, &records)?;
+    let k25_written = store.insert_gen4_k25_records(&args.device_id, &k25_records)?;
+    Ok(json!({
+        "frame_count": args.frames.len(),
+        "records_decoded": records.len(),
+        "records_written": written,
+        "k25_records_decoded": k25_records.len(),
+        "k25_records_written": k25_written,
+        "frame_type_counts": frame_type_counts,
+        "console_logs": console_logs,
+        "unknown_version_samples": unknown_version_samples,
+    }))
+}
+
+fn gen4_history_samples_bridge(args: Gen4HistoryQueryArgs) -> GooseResult<serde_json::Value> {
+    let store = open_bridge_store(&args.database_path)?;
+    let records = store.gen4_history_records_between(&args.device_id, args.start_ts, args.end_ts)?;
+    Ok(json!({
+        "device_id": args.device_id,
+        "count": records.len(),
+        "records": records,
+    }))
+}
+
+fn gen4_all_history_samples_bridge(args: Gen4AllHistoryQueryArgs) -> GooseResult<serde_json::Value> {
+    let store = open_bridge_store(&args.database_path)?;
+    let records = store.gen4_all_history_records_between(args.start_ts, args.end_ts)?;
+    Ok(json!({
+        "count": records.len(),
+        "records": records,
+    }))
+}
+
+fn gen4_spo2_series_bridge(args: Gen4Spo2Args) -> GooseResult<serde_json::Value> {
+    let store = open_bridge_store(&args.database_path)?;
+    let records = store.gen4_history_records_between(&args.device_id, args.start_ts, args.end_ts)?;
+    let series = crate::gen4::compute_spo2_series(&records, args.window);
+    let clean_estimates = series.iter().filter(|s| !s.motion_rejected).count();
+    Ok(json!({
+        "window": args.window,
+        "input_records": records.len(),
+        "estimates": series.len(),
+        "clean_estimates": clean_estimates,
+        "series": series,
+    }))
+}
+
+fn gen4_ingest_ppg_bridge(args: Gen4IngestPpgArgs) -> GooseResult<serde_json::Value> {
+    let raw: Vec<(String, i64)> = args
+        .packets
+        .into_iter()
+        .map(|p| (p.hex, p.received_ms))
+        .collect();
+    let decoded = crate::gen4::decode_ppg_packets(&raw);
+    let beats = crate::gen4::detect_ppg_beats(&decoded);
+    let store = open_bridge_store(&args.database_path)?;
+    let written = store.insert_gen4_ppg_beats(&args.device_id, &beats)?;
+    Ok(json!({
+        "packets_received": raw.len(),
+        "packets_decoded": decoded.len(),
+        "beats_detected": beats.len(),
+        "beats_written": written,
+    }))
+}
+
+fn gen4_resting_hr_bridge(args: Gen4RestingHrArgs) -> GooseResult<serde_json::Value> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let now_s = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let from_s = now_s - args.lookback_s;
+    let store = open_bridge_store(&args.database_path)?;
+    let hr_series = store.query_gen4_hr_series(&args.device_id, from_s, now_s)?;
+    match crate::gen4::compute_resting_hr(&hr_series) {
+        Some(result) => Ok(json!({
+            "found": true,
+            "bpm": result.bpm,
+            "sample_count": result.sample_count,
+        })),
+        None => Ok(json!({
+            "found": false,
+            "sample_count": hr_series.len(),
+        })),
+    }
+}
+
+fn gen4_hrv_rmssd_bridge(args: Gen4HrvRmssdArgs) -> GooseResult<serde_json::Value> {
+    let store = open_bridge_store(&args.database_path)?;
+    let max_ts = match store.query_gen4_ppg_max_ts(&args.device_id)? {
+        Some(t) => t,
+        None => return Ok(json!({ "found": false, "reason": "no_beats" })),
+    };
+    let from_ms = max_ts - args.window_ms;
+    let rr_series = store.query_gen4_ppg_beats_rr(&args.device_id, from_ms, max_ts)?;
+    match crate::gen4::compute_hrv_rmssd(&rr_series) {
+        Some(result) => Ok(json!({
+            "found": true,
+            "rmssd_ms": result.rmssd_ms,
+            "rr_count": result.rr_count,
+            "chunk_count": result.chunk_count,
+        })),
+        None => Ok(json!({
+            "found": false,
+            "rr_count": rr_series.len(),
+        })),
+    }
+}
+
+fn compact_gen4_battery(data_hex: &str) -> (Option<f64>, Option<i64>, Option<bool>) {
+    let Ok(bytes) = hex::decode(data_hex) else {
+        return (None, None, None);
+    };
+    let pct = if bytes.len() >= 3 {
+        let raw = u16::from_le_bytes([bytes[1], bytes[2]]) as f64;
+        if raw <= 1100.0 { Some(raw / 10.0) } else { None }
+    } else {
+        None
+    };
+    let mv = if bytes.len() >= 7 {
+        let v = u16::from_le_bytes([bytes[5], bytes[6]]) as i64;
+        if (3000..=4300).contains(&v) { Some(v) } else { None }
+    } else {
+        None
+    };
+    let charging = if bytes.len() >= 11 {
+        let ch = bytes[10];
+        if ch <= 1 { Some(ch != 0) } else { None }
+    } else {
+        None
+    };
+    (pct, mv, charging)
+}
+
 fn compact_parsed_frame_summary(parsed: &ParsedFrame) -> serde_json::Value {
     let packet = parsed
         .packet_type
@@ -2700,6 +2972,16 @@ fn compact_parsed_frame_summary(parsed: &ParsedFrame) -> serde_json::Value {
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "?".to_string());
             let event_name_text = event_name.as_deref().unwrap_or("unknown");
+            // For Gen4 BATTERY_LEVEL events, surface the decoded battery fields so the Swift
+            // compact-summary consumer can update the UI without needing include_result:true.
+            // data_hex starts at payload[12] = frame[16]; gen4.rs battery offsets in frame:
+            //   soc@17 → data byte 1, mV@21 → data byte 5, charge@26 → data byte 10.
+            let (battery_pct, battery_mv, battery_charging) =
+                if event_name.as_deref() == Some("BATTERY_LEVEL") {
+                    compact_gen4_battery(data_hex)
+                } else {
+                    (None, None, None)
+                };
             json!({
                 "packet_type": parsed.packet_type,
                 "packet_type_name": packet_type_name,
@@ -2709,6 +2991,9 @@ fn compact_parsed_frame_summary(parsed: &ParsedFrame) -> serde_json::Value {
                 "event_id": event_id,
                 "event_name": event_name,
                 "event_byte_count": data_hex.len() / 2,
+                "battery_pct": battery_pct,
+                "battery_mV": battery_mv,
+                "battery_charging": battery_charging,
                 "summary": format!("packet={packet_name}({packet}) seq={sequence} event={event_name_text}({event_id_text}) bytes={} warnings={warning_count}", data_hex.len() / 2),
             })
         }

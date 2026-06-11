@@ -28,6 +28,9 @@ extension GooseBLEClient {
 
   func forgetRememberedDevice() {
     clearRememberedDevice(reason: "manual", source: "ui")
+    if let peripheral = activePeripheral {
+      central?.cancelPeripheralConnection(peripheral)
+    }
   }
 
   @discardableResult
@@ -258,18 +261,19 @@ extension GooseBLEClient {
       return
     }
 
-    var commands: [(name: String, number: UInt8, payload: [UInt8])] = [
-      ("GET_HELLO_HARVARD", 35, [0x00]),
-      ("SET_CLOCK", 10, ClockCommandKind.set(Date()).payload),
-      ("GET_CLOCK", 11, []),
+    // Minimal noop-mirroring handshake: only commands verified necessary for Gen4.
+    // R20/R21 (153/154) control the type-43 raw flood, not K47 — excluded.
+    // cmd 106 (IMU mode) and cmd 108 (optical mode) not needed for K47 per noop reference — excluded.
+    // cmd 107 retained: stopPhysiologyCapture persistently disabled optical with [0x01,0x00];
+    // green LEDs confirm [0x01,0x01] restores it. Leave it alone after that.
+    let commands: [(name: String, number: UInt8, payload: [UInt8])] = [
+      ("EXIT_HIGH_FREQ_SYNC",       97,  [0x00]),
+      ("GET_HELLO_HARVARD",         35,  [0x00]),
+      ("SET_CLOCK",                 10,  ClockCommandKind.set(Date()).payload),
+      ("ENABLE_OPTICAL_DATA_ON",   107,  [0x01, 0x01]),
+      ("SEND_R10_R11_REALTIME_OFF", 63,  [0x00]),
     ]
-    // Quiet any raw IMU/optical streaming the strap may still have enabled. WHOOP 4.0's raw modes
-    // (incl. the persistent R20/R21 toggles) survive reconnect, so a prior capture leaves the strap
-    // firehosing ~1.9 KB type-43 frames on the data characteristic — swamping frame reassembly
-    // (the `reassembly.dropped` noise) and competing with historical offload. Send the full OFF set.
-    for stop in SensorStreamCommandKind.stopPhysiologyCapture {
-      commands.append((stop.name, stop.commandNumber, stop.payload))
-    }
+
     var sequence: UInt8 = 1
     for command in commands {
       let frame = buildCommandFrame(sequence: sequence, command: command.number, data: command.payload)
@@ -293,7 +297,8 @@ extension GooseBLEClient {
       sequence &+= 1
     }
     clientHelloSentForCurrentConnection = true
-    record(source: "ble.gen4", title: "gen4.handshake.sent", body: "reason=\(reason) \(commandCharacteristic.uuid.uuidString)")
+    record(source: "ble.gen4", title: "gen4.handshake.sent",
+           body: "reason=\(reason) commands=5 exit_hf+hello+clock+optical+r10r11off")
   }
 
   func syncHistoricalPackets(rangeFirst: Bool = false) {
@@ -344,24 +349,58 @@ extension GooseBLEClient {
   }
 
   func startMovementHeartRateCapture() {
-    guard activeDeviceGeneration == .gen5 else {
-      record(level: .info, source: "ui.debug", title: "movement_hr_capture.start.skipped_gen4",
-             body: "realtime/movement raw capture is disabled for WHOOP 4.0 during bring-up (keeps the channel clear for commands + historical sync)")
-      return
-    }
     record(source: "ui.debug", title: "movement_hr_capture.start.requested")
-    writeSensorStreamCommands(
-      SensorStreamCommandKind.startMovementHeartRateCapture,
-      requestedStatus: "Starting movement + HR capture"
-    )
+    if activeDeviceGeneration == .gen4 {
+      isGen4PpgCapturing = true
+      writeGen4RealtimeCommand(on: true)
+    } else {
+      writeSensorStreamCommands(
+        SensorStreamCommandKind.startMovementHeartRateCapture,
+        requestedStatus: "Starting movement + HR capture"
+      )
+    }
   }
 
   func stopMovementHeartRateCapture() {
     record(source: "ui.debug", title: "movement_hr_capture.stop.requested")
-    writeSensorStreamCommands(
-      SensorStreamCommandKind.stopMovementHeartRateCapture,
-      requestedStatus: "Stopping movement + HR capture"
+    isGen4PpgCapturing = false
+    if activeDeviceGeneration == .gen4 {
+      writeGen4RealtimeCommand(on: false)
+    } else {
+      writeSensorStreamCommands(
+        SensorStreamCommandKind.stopMovementHeartRateCapture,
+        requestedStatus: "Stopping movement + HR capture"
+      )
+    }
+  }
+
+  /// Send SEND_R10_R11_REALTIME (cmd 63) directly for Gen4, bypassing the V5 sensor stream
+  /// command path which is blocked for Gen4 (it also sends handshake commands 106/107/108
+  /// that would break the optical sensor setup).
+  private func writeGen4RealtimeCommand(on: Bool) {
+    guard let activePeripheral, let commandCharacteristic else {
+      record(level: .warn, source: "ble.sensor", title: "gen4.realtime.blocked",
+             body: "no active peripheral/characteristic")
+      return
+    }
+    guard let writeType = writeType(for: commandCharacteristic) else {
+      record(level: .warn, source: "ble.sensor", title: "gen4.realtime.blocked",
+             body: "characteristic not writable")
+      return
+    }
+    let cmd = SensorStreamCommandKind(
+      commandNumber: 63,
+      payload: on ? [0x01] : [0x00],
+      name: on ? "SEND_R10_R11_REALTIME_ON" : "SEND_R10_R11_REALTIME_OFF"
     )
+    writeSensorStreamCommand(
+      cmd,
+      peripheral: activePeripheral,
+      characteristic: commandCharacteristic,
+      writeType: writeType
+    )
+    record(source: "ble.sensor", title: "gen4.realtime.\(on ? "start" : "stop")",
+           body: "cmd=63 payload=\(on ? "01" : "00")")
   }
 
   func stopPhysiologySignalCapture() {
@@ -516,6 +555,10 @@ extension GooseBLEClient {
 
   func refreshBatteryLevel() {
     record(source: "ui", title: "battery.refresh.requested")
+    guard activeDeviceGeneration != .gen4 else {
+      record(source: "ble.metadata", title: "battery.refresh.skipped", body: "gen4: battery sourced from events")
+      return
+    }
     guard let activePeripheral else {
       record(level: .warn, source: "ble.metadata", title: "battery.refresh.blocked", body: "no active peripheral")
       return

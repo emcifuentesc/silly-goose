@@ -218,6 +218,7 @@ extension GooseAppModel {
 
   func stopMovementHeartRateCapture() {
     ble.stopMovementHeartRateCapture()
+    gen4PpgAccumulator.flush(deviceID: ble.activeDeviceIdentifier?.uuidString ?? "")
   }
 
   func enterHighFrequencyHistorySync() {

@@ -379,6 +379,8 @@ struct HealthRouteContentView: View {
       ReferenceComparisonsView(store: store)
     case .calibration:
       CalibrationHealthView(store: store)
+    case .gen4History:
+      Gen4HistoryView(store: store)
     }
   }
 }

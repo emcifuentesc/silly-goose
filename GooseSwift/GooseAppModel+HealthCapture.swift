@@ -220,6 +220,7 @@ extension GooseAppModel {
       ble.record(source: "health.packet_capture", title: "finish.ok", body: "\(capture.sessionID) frames=\(capture.importedFrameCount) reason=\(reason)")
       if capture.mode == .walk {
         ble.stopMovementHeartRateCapture()
+        gen4PpgAccumulator.flush(deviceID: ble.activeDeviceIdentifier?.uuidString ?? "")
       } else if capture.mode == .physiology {
         ble.stopPhysiologySignalCapture()
       }
@@ -308,6 +309,15 @@ extension GooseAppModel {
 
   func handleHistoricalSyncProgress(_ progress: GooseHistoricalSyncProgress) {
     handleOvernightHistoricalSyncProgress(progress)
+    // When a Gen4 sync ends, flush any buffered historical records so the final (sub-threshold)
+    // batch is persisted promptly. Idempotent, so an extra flush is harmless.
+    if progress.isTerminal || progress.failed {
+      let deviceID = ble.activeDeviceIdentifier?.uuidString ?? ""
+      gen4HistoryAccumulator.flush(deviceID: deviceID)
+      if progress.isTerminal && !progress.failed && ble.activeDeviceGeneration == .gen4 {
+        computeAndPublishGen4RestingHR(deviceID: deviceID)
+      }
+    }
     guard respiratoryPacketWatchActive else {
       return
     }
@@ -468,6 +478,7 @@ extension GooseAppModel {
     temperatureHistorySyncWorkItem?.cancel()
     ble.record(source: "health.packet_capture", title: "temperature.live_stream.stop_requested", body: reason)
     ble.stopMovementHeartRateCapture()
+    gen4PpgAccumulator.flush(deviceID: ble.activeDeviceIdentifier?.uuidString ?? "")
     let workItem = DispatchWorkItem { [weak self] in
       Task { @MainActor in
         self?.startTemperatureHistoricalSync(reason: reason)
@@ -588,6 +599,101 @@ extension GooseAppModel {
       return "\(Int((duration / 60).rounded())) min"
     }
     return "\(Int(duration.rounded())) sec"
+  }
+
+  func computeAndPublishGen4RestingHR(deviceID: String) {
+    guard !deviceID.isEmpty else { return }
+    DispatchQueue.global(qos: .utility).async { [weak self] in
+      guard let self else { return }
+      do {
+        let response = try rust.request(
+          method: "gen4.resting_hr",
+          args: [
+            "database_path": HealthDataStore.defaultDatabasePath(),
+            "device_id": deviceID,
+          ]
+        )
+        guard (response["found"] as? Bool) == true,
+              let bpm = response["bpm"] as? Double,
+              let sampleCount = response["sample_count"] as? Int else {
+          let count = (response["sample_count"] as? Int) ?? 0
+          DispatchQueue.main.async {
+            self.ble.record(source: "gen4.resting_hr", title: "compute.insufficient", body: "samples=\(count)")
+          }
+          return
+        }
+        DispatchQueue.main.async {
+          self.ble.persistRestingHeartRateEstimate(
+            bpm: bpm,
+            sampleCount: sampleCount,
+            source: "gen4.ble.history.rolling_min",
+            capturedAt: Date()
+          )
+          self.ble.restingHeartRateEstimateBPM = bpm
+          self.ble.restingHeartRateEstimateSampleCount = sampleCount
+          self.ble.restingHeartRateEstimateSource = "gen4.ble.history.rolling_min"
+          self.ble.restingHeartRateEstimateUpdatedAt = Date()
+          self.ble.record(
+            source: "gen4.resting_hr",
+            title: "compute.ok",
+            body: "bpm=\(String(format: "%.1f", bpm)) samples=\(sampleCount)"
+          )
+        }
+      } catch {
+        DispatchQueue.main.async {
+          self.ble.record(level: .error, source: "gen4.resting_hr", title: "compute.failed", body: String(describing: error))
+        }
+      }
+    }
+  }
+
+  func computeAndPublishGen4HRVRMSSD(deviceID: String) {
+    guard !deviceID.isEmpty else { return }
+    DispatchQueue.global(qos: .utility).async { [weak self] in
+      guard let self else { return }
+      do {
+        let response = try rust.request(
+          method: "gen4.hrv_rmssd",
+          args: [
+            "database_path": HealthDataStore.defaultDatabasePath(),
+            "device_id": deviceID,
+          ]
+        )
+        guard (response["found"] as? Bool) == true,
+              let rmssdMs = response["rmssd_ms"] as? Double,
+              let rrCount = response["rr_count"] as? Int,
+              let chunkCount = response["chunk_count"] as? Int else {
+          let rrCount = (response["rr_count"] as? Int) ?? 0
+          DispatchQueue.main.async {
+            self.ble.record(source: "gen4.hrv_rmssd", title: "compute.insufficient", body: "rr=\(rrCount)")
+          }
+          return
+        }
+        DispatchQueue.main.async {
+          self.ble.persistHRVSample(
+            rmssd: rmssdMs,
+            rrIntervalCount: rrCount,
+            sampleCount: chunkCount,
+            source: "gen4.ble.ppg.rmssd",
+            capturedAt: Date()
+          )
+          self.ble.liveHRVRMSSD = rmssdMs
+          self.ble.liveHRVRRIntervalCount = rrCount
+          self.ble.liveHRVRMSSDSampleCount = chunkCount
+          self.ble.liveHRVSource = "gen4.ble.ppg.rmssd"
+          self.ble.liveHRVUpdatedAt = Date()
+          self.ble.record(
+            source: "gen4.hrv_rmssd",
+            title: "compute.ok",
+            body: "rmssd=\(String(format: "%.1f", rmssdMs))ms rr=\(rrCount)"
+          )
+        }
+      } catch {
+        DispatchQueue.main.async {
+          self.ble.record(level: .error, source: "gen4.hrv_rmssd", title: "compute.failed", body: String(describing: error))
+        }
+      }
+    }
   }
 
 }

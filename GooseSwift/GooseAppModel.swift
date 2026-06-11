@@ -86,6 +86,16 @@ final class GooseAppModel: ObservableObject {
     publishInterval: GooseAppModel.packetUIStatePublishInterval
   )
   let overnightSQLiteMirror = OvernightSQLiteMirrorQueue(databasePath: HealthDataStore.defaultDatabasePath())
+  // WHOOP 4.0 historical biometric persistence: during a Gen4 sync, complete type-47 records
+  // (reassembled by the main pipeline) are buffered off the main actor and batch-written to
+  // gen4_history_samples via `gen4.ingest_history`. See Gen4HistoryAccumulator + the wiring in
+  // GooseAppModel+NotificationPipeline.
+  let gen4HistoryAccumulator = Gen4HistoryAccumulator(
+    databasePath: HealthDataStore.defaultDatabasePath()
+  )
+  let gen4PpgAccumulator = Gen4PpgAccumulator(
+    databasePath: HealthDataStore.defaultDatabasePath()
+  )
   let passiveActivityDetectionPipeline = PassiveActivityDetectionPipeline()
   var activeActivityPersistence: ActiveActivityPersistence?
   var activeActivityOwnsCaptureSession = false
@@ -394,6 +404,21 @@ final class GooseAppModel: ObservableObject {
     ble.onHistoricalSyncProgress = { [weak self] progress in
       Task { @MainActor in
         self?.handleHistoricalSyncProgress(progress)
+      }
+    }
+    gen4HistoryAccumulator.logHandler = { [weak ble] level, message in
+      Task { @MainActor in
+        ble?.record(level: level, source: "gen4.history", title: "ingest", body: message)
+      }
+    }
+    gen4PpgAccumulator.logHandler = { [weak ble] level, message in
+      Task { @MainActor in
+        ble?.record(level: level, source: "gen4.ppg", title: "ingest", body: message)
+      }
+    }
+    gen4PpgAccumulator.onBeatsWritten = { [weak self] deviceID in
+      Task { @MainActor in
+        self?.computeAndPublishGen4HRVRMSSD(deviceID: deviceID)
       }
     }
     ble.onHistoricalRangeTelemetry = { [weak self] telemetry in

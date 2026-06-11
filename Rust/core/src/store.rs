@@ -1419,6 +1419,25 @@ impl GooseStore {
             INSERT OR IGNORE INTO goose_schema_migrations(version) VALUES (12);
             INSERT OR IGNORE INTO goose_schema_migrations(version) VALUES (13);
             INSERT OR IGNORE INTO goose_schema_migrations(version) VALUES (14);
+            CREATE TABLE IF NOT EXISTS gen4_history_samples (
+                device_id TEXT NOT NULL,
+                ts INTEGER NOT NULL,
+                heart_rate INTEGER,
+                rr_intervals_json TEXT NOT NULL DEFAULT '[]',
+                spo2_red INTEGER,
+                spo2_ir INTEGER,
+                skin_temp_raw INTEGER,
+                resp_rate_raw INTEGER,
+                gravity_x REAL,
+                gravity_y REAL,
+                gravity_z REAL,
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                PRIMARY KEY (device_id, ts)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_gen4_history_samples_device_time
+                ON gen4_history_samples(device_id, ts);
+
             PRAGMA user_version = 14;
             "#,
         )?;
@@ -1428,6 +1447,8 @@ impl GooseStore {
         self.ensure_daily_activity_metric_multi_row_source_kind()?;
         self.ensure_daily_recovery_metric_multi_row_source_kind()?;
         self.ensure_step_counter_sample_columns()?;
+        self.ensure_gen4_k25_table()?;
+        self.ensure_gen4_ppg_beats_table()?;
         Ok(())
     }
 
@@ -1955,6 +1976,114 @@ impl GooseStore {
             warnings_json
         ])?;
         Ok(changed > 0)
+    }
+
+    /// Upsert decoded WHOOP 4.0 historical biometric records (one row per record, keyed by ts).
+    /// Idempotent — re-syncing the same window replaces rows rather than duplicating them.
+    /// Returns the number of records written.
+    pub fn insert_gen4_history_records(
+        &self,
+        device_id: &str,
+        records: &[crate::gen4::Gen4HistoryRecord],
+    ) -> GooseResult<usize> {
+        let mut stmt = self.conn.prepare(
+            "INSERT OR REPLACE INTO gen4_history_samples
+                (device_id, ts, heart_rate, rr_intervals_json, spo2_red, spo2_ir,
+                 skin_temp_raw, resp_rate_raw, gravity_x, gravity_y, gravity_z)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        )?;
+        let mut count = 0usize;
+        for record in records {
+            let rr_json = serde_json::to_string(&record.rr_intervals_ms)
+                .map_err(|error| GooseError::message(format!("rr serialize: {error}")))?;
+            stmt.execute(params![
+                device_id,
+                record.ts,
+                record.heart_rate,
+                rr_json,
+                record.spo2_red,
+                record.spo2_ir,
+                record.skin_temp_raw,
+                record.resp_rate_raw,
+                record.gravity_x,
+                record.gravity_y,
+                record.gravity_z,
+            ])?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    /// Read decoded WHOOP 4.0 historical biometric records in `[start_ts, end_ts]`, ordered by ts.
+    pub fn gen4_history_records_between(
+        &self,
+        device_id: &str,
+        start_ts: i64,
+        end_ts: i64,
+    ) -> GooseResult<Vec<crate::gen4::Gen4HistoryRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT ts, heart_rate, rr_intervals_json, spo2_red, spo2_ir,
+                    skin_temp_raw, resp_rate_raw, gravity_x, gravity_y, gravity_z
+             FROM gen4_history_samples
+             WHERE device_id = ?1 AND ts >= ?2 AND ts <= ?3
+             ORDER BY ts ASC",
+        )?;
+        let rows = stmt.query_map(params![device_id, start_ts, end_ts], |row| {
+            let rr_json: String = row.get(2)?;
+            Ok(crate::gen4::Gen4HistoryRecord {
+                ts: row.get(0)?,
+                heart_rate: row.get(1)?,
+                rr_intervals_ms: serde_json::from_str(&rr_json).unwrap_or_default(),
+                spo2_red: row.get(3)?,
+                spo2_ir: row.get(4)?,
+                skin_temp_raw: row.get(5)?,
+                resp_rate_raw: row.get(6)?,
+                gravity_x: row.get(7)?,
+                gravity_y: row.get(8)?,
+                gravity_z: row.get(9)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Read decoded Gen4 historical biometric records across ALL devices in `[start_ts, end_ts]`.
+    /// Ordered by ts ASC. Use when a specific device_id is not known (e.g. history view).
+    pub fn gen4_all_history_records_between(
+        &self,
+        start_ts: i64,
+        end_ts: i64,
+    ) -> GooseResult<Vec<crate::gen4::Gen4HistoryRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT ts, heart_rate, rr_intervals_json, spo2_red, spo2_ir,
+                    skin_temp_raw, resp_rate_raw, gravity_x, gravity_y, gravity_z
+             FROM gen4_history_samples
+             WHERE ts >= ?1 AND ts <= ?2
+             ORDER BY ts ASC",
+        )?;
+        let rows = stmt.query_map(params![start_ts, end_ts], |row| {
+            let rr_json: String = row.get(2)?;
+            Ok(crate::gen4::Gen4HistoryRecord {
+                ts: row.get(0)?,
+                heart_rate: row.get(1)?,
+                rr_intervals_ms: serde_json::from_str(&rr_json).unwrap_or_default(),
+                spo2_red: row.get(3)?,
+                spo2_ir: row.get(4)?,
+                skin_temp_raw: row.get(5)?,
+                resp_rate_raw: row.get(6)?,
+                gravity_x: row.get(7)?,
+                gravity_y: row.get(8)?,
+                gravity_z: row.get(9)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
     }
 
     pub fn start_capture_session(&self, input: CaptureSessionInput<'_>) -> GooseResult<bool> {
@@ -6247,6 +6376,142 @@ impl GooseStore {
             }
         }
         Ok(false)
+    }
+
+    fn ensure_gen4_k25_table(&self) -> GooseResult<()> {
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS gen4_k25_samples (
+                device_id     TEXT    NOT NULL,
+                ts            INTEGER NOT NULL,
+                optical_dc    INTEGER,
+                skin_temp_raw INTEGER,
+                imu_json      TEXT    NOT NULL DEFAULT '[]',
+                created_at    TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                PRIMARY KEY (device_id, ts)
+            );",
+        )?;
+        // Additive migration for installs that already have the table without imu_json.
+        let columns = self.table_columns_unchecked("gen4_k25_samples")?;
+        if !columns.contains("imu_json") {
+            self.conn.execute(
+                "ALTER TABLE gen4_k25_samples ADD COLUMN imu_json TEXT NOT NULL DEFAULT '[]'",
+                [],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Insert/replace K25 pulse-info records. Idempotent — re-syncing the same
+    /// window replaces rows rather than duplicating them. Returns rows written.
+    pub fn insert_gen4_k25_records(
+        &self,
+        device_id: &str,
+        records: &[crate::gen4::Gen4K25Record],
+    ) -> GooseResult<usize> {
+        let mut stmt = self.conn.prepare(
+            "INSERT OR REPLACE INTO gen4_k25_samples
+                (device_id, ts, optical_dc, skin_temp_raw, imu_json)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        let mut count = 0usize;
+        for record in records {
+            let imu_json = serde_json::to_string(&record.imu_samples)
+                .map_err(|e| GooseError::message(format!("imu serialize: {e}")))?;
+            stmt.execute(params![
+                device_id,
+                record.ts,
+                record.optical_dc,
+                record.skin_temp_raw,
+                imu_json,
+            ])?;
+            count += 1;
+        }
+        Ok(count)
+    }
+
+    /// Query heart_rate values from gen4_history_samples ordered by ascending ts (Unix seconds).
+    pub fn query_gen4_hr_series(
+        &self,
+        device_id: &str,
+        from_s: i64,
+        to_s: i64,
+    ) -> GooseResult<Vec<i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT heart_rate FROM gen4_history_samples
+              WHERE device_id = ?1 AND ts >= ?2 AND ts <= ?3
+                AND heart_rate IS NOT NULL
+              ORDER BY ts ASC",
+        )?;
+        let result = stmt
+            .query_map(params![device_id, from_s, to_s], |row| row.get::<_, i64>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(result)
+    }
+
+    /// Return the most recent ts_ms in gen4_ppg_beats for this device.
+    pub fn query_gen4_ppg_max_ts(&self, device_id: &str) -> GooseResult<Option<i64>> {
+        let result: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT MAX(ts_ms) FROM gen4_ppg_beats WHERE device_id = ?1",
+                params![device_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(result)
+    }
+
+    /// Query valid RR intervals (300–2500 ms) from gen4_ppg_beats ordered by ts_ms.
+    pub fn query_gen4_ppg_beats_rr(
+        &self,
+        device_id: &str,
+        from_ms: i64,
+        to_ms: i64,
+    ) -> GooseResult<Vec<i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT rr_ms FROM gen4_ppg_beats
+              WHERE device_id = ?1 AND ts_ms >= ?2 AND ts_ms <= ?3
+                AND rr_ms >= 300 AND rr_ms <= 2500
+              ORDER BY ts_ms ASC",
+        )?;
+        let result = stmt
+            .query_map(params![device_id, from_ms, to_ms], |row| row.get::<_, i64>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(result)
+    }
+
+    fn ensure_gen4_ppg_beats_table(&self) -> GooseResult<()> {
+        self.conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS gen4_ppg_beats (
+                device_id  TEXT    NOT NULL,
+                ts_ms      INTEGER NOT NULL,
+                rr_ms      INTEGER NOT NULL,
+                created_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                PRIMARY KEY (device_id, ts_ms)
+            );",
+        )?;
+        Ok(())
+    }
+
+    /// Insert/replace detected PPG beats. Idempotent — re-processing the same window
+    /// replaces rows. Returns rows written.
+    pub fn insert_gen4_ppg_beats(
+        &self,
+        device_id: &str,
+        beats: &[crate::gen4::Gen4PpgBeat],
+    ) -> GooseResult<usize> {
+        let mut stmt = self.conn.prepare(
+            "INSERT OR REPLACE INTO gen4_ppg_beats (device_id, ts_ms, rr_ms)
+             VALUES (?1, ?2, ?3)",
+        )?;
+        let mut count = 0usize;
+        for beat in beats {
+            stmt.execute(params![device_id, beat.ts_ms, beat.rr_ms])?;
+            count += 1;
+        }
+        Ok(count)
     }
 
     fn ensure_step_counter_sample_columns(&self) -> GooseResult<()> {

@@ -145,7 +145,17 @@
             {"off": 22, "len": 1, "dtype": "u8", "name": "rr_count", "cat": "rr"}
           ], "rr_first_off": 23, "note": "Generic HR/RR-only record (no DSP sensor block)."},
         "7": {"kind": "generic", "ref": "5"},
-        "9": {"kind": "generic", "ref": "5"}
+        "9": {"kind": "generic", "ref": "5"},
+        "25": {
+          "kind": "pulse",
+          "fields": [
+            {"off": 11, "len": 4, "dtype": "u32", "name": "unix", "cat": "time", "note": "real unix seconds"},
+            {"off": 19, "len": 4, "dtype": "u32", "name": "optical_dc", "cat": "optical", "note": "integrated optical ADC over ~1s window (red or IR channel); verified on live K25 captures"},
+            {"off": 73, "len": 2, "dtype": "u16", "name": "skin_temp_raw", "cat": "temp", "note": "slowly-varying ADC (~15400 across consecutive samples); candidate skin temperature"}
+          ],
+          "note": "K25 pulse-information packet. 84 bytes total. frame[7..11]=counter u32, frame[23..71]=24xi16 (8 XYZ IMU samples at ~8 Hz for motion correction), frame[71..73] unknown, frame[75..77]=constant 1360 (LED drive?), frame[77..79]=constant 256."
+        },
+        "26": {"kind": "pulse", "ref": "25", "note": "K26 = same layout as K25."}
       }
     },
     "EVENT": {

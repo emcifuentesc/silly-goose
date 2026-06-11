@@ -98,6 +98,10 @@ extension GooseBLEClient {
       commandPayload = pendingHistoryEndAckPayload ?? kind.payload
     } else if kind == .sendHistoricalData, activeDeviceGeneration == .gen4 {
       // WHOOP 4.0 expects a single zero byte for SEND_HISTORICAL_DATA (v5 sends an empty payload).
+      // EnterHighFreqSync (cmd 96) is intentionally NOT sent here: noop verified that plain
+      // SEND_HISTORICAL_DATA [0x00] serves type-47 normally (50 records), while entering high-freq
+      // mode first produces 0 records. ExitHighFreqSync is sent in the Gen4 handshake to release any
+      // strap left parked in high-freq by a previous session.
       commandPayload = [0x00]
     } else {
       commandPayload = kind.payload

@@ -663,6 +663,10 @@ fn post_raw_data(b: &mut Builder, frame: &[u8], length: Option<usize>, spec: &Pa
                 );
                 b.put("ppg_sample_count", int_val(vals.len() as i64));
                 b.put("ppg_mean", mean_value(mean));
+                b.put(
+                    "ppg_samples",
+                    Value::Array(vals.iter().copied().map(int_val).collect()),
+                );
             }
         }
         _ => {}
@@ -760,16 +764,36 @@ fn post_metadata(b: &mut Builder, frame: &[u8], length: Option<usize>) {
 
 fn post_console_logs(b: &mut Builder, frame: &[u8], length: Option<usize>) {
     let Some(length) = length else { return };
-    let mut txt = String::new();
     let lo = 11usize;
-    if length >= 1 {
-        let hi = length - 1;
-        if lo < hi && hi <= frame.len() {
-            txt = String::from_utf8_lossy(&frame[lo..hi]).into_owned();
-        }
-    }
+    let hi = if length >= 1 { (length - 1).min(frame.len()) } else { 0 };
+    let txt = if lo < hi { bytes_to_escaped_string(&frame[lo..hi]) } else { String::new() };
     b.region(7, length, "console log text", "text");
     b.put("log", Value::String(txt));
+}
+
+/// Converts bytes to a UTF-8 string, hex-escaping any invalid sequences as `\xNN`.
+fn bytes_to_escaped_string(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match std::str::from_utf8(&bytes[i..]) {
+            Ok(s) => { out.push_str(s); break; }
+            Err(e) => {
+                let valid = e.valid_up_to();
+                if valid > 0 {
+                    // SAFETY: from_utf8 confirmed these bytes are valid UTF-8
+                    out.push_str(unsafe { std::str::from_utf8_unchecked(&bytes[i..i + valid]) });
+                }
+                i += valid;
+                let skip = e.error_len().unwrap_or(bytes.len() - i);
+                for &b in &bytes[i..i + skip] {
+                    out.push_str(&format!("\\x{b:02x}"));
+                }
+                i += skip;
+            }
+        }
+    }
+    out
 }
 
 /// Format a unix timestamp as `"yyyy-MM-dd HH:mm 'UTC'"` (matches the Swift DateFormatter
@@ -1023,4 +1047,492 @@ pub fn extract_historical_streams(frames: &[Gen4Frame], device_ref: i64, wall_re
         }
     }
     out
+}
+
+// ===========================================================================
+// Per-record historical decode — one durable biometric row per HISTORICAL_DATA
+// frame, for persistence + later metric computation. Each WHOOP 4.0 V24/V12
+// record carries a real-unix timestamp and a full DSP block, so a row-per-record
+// shape (keyed by ts) is the natural persistence unit.
+// ===========================================================================
+
+/// One decoded historical biometric record (a type-47 V24/V12 frame). Raw ADCs
+/// (spo2/skin_temp/resp) are kept as-is — WHOOP converts those server-side.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Gen4HistoryRecord {
+    pub ts: i64, // real unix seconds
+    pub heart_rate: Option<i64>,
+    pub rr_intervals_ms: Vec<i64>,
+    pub spo2_red: Option<i64>,
+    pub spo2_ir: Option<i64>,
+    pub skin_temp_raw: Option<i64>,
+    pub resp_rate_raw: Option<i64>,
+    pub gravity_x: Option<f64>,
+    pub gravity_y: Option<f64>,
+    pub gravity_z: Option<f64>,
+}
+
+/// Build one `Gen4HistoryRecord` per decoded HISTORICAL_DATA frame, reading the
+/// already-validated `parsed` dict. CRC-failed / non-ok / non-historical frames are skipped,
+/// as are records without a real unix timestamp.
+pub fn decode_history_records(frames: &[Gen4Frame]) -> Vec<Gen4HistoryRecord> {
+    const BIOMETRIC_VERSIONS: &[i64] = &[5, 7, 9, 12, 24];
+    let mut out = Vec::new();
+    for frame in frames {
+        if !frame.ok || frame.crc_ok == Some(false) || frame.type_name != "HISTORICAL_DATA" {
+            continue;
+        }
+        let p = &frame.parsed;
+        // K25/K26 are pulse-info packets with their own table — skip them here.
+        if let Some(v) = p_i64(p, "hist_version") {
+            if !BIOMETRIC_VERSIONS.contains(&v) {
+                continue;
+            }
+        }
+        let Some(ts) = p_i64(p, "unix") else { continue };
+        out.push(Gen4HistoryRecord {
+            ts,
+            heart_rate: p_i64(p, "heart_rate"),
+            rr_intervals_ms: p_i64_array(p, "rr_intervals").unwrap_or_default(),
+            spo2_red: p_i64(p, "spo2_red"),
+            spo2_ir: p_i64(p, "spo2_ir"),
+            skin_temp_raw: p_i64(p, "skin_temp_raw"),
+            resp_rate_raw: p_i64(p, "resp_rate_raw"),
+            gravity_x: p_f64(p, "gravity_x"),
+            gravity_y: p_f64(p, "gravity_y"),
+            gravity_z: p_f64(p, "gravity_z"),
+        });
+    }
+    out
+}
+
+/// Decode hex frames straight into historical biometric records.
+pub fn decode_history_records_hex(frames: &[String]) -> GooseResult<Vec<Gen4HistoryRecord>> {
+    let decoded = frames
+        .iter()
+        .map(|hex| decode_frame_hex(hex))
+        .collect::<GooseResult<Vec<_>>>()?;
+    Ok(decode_history_records(&decoded))
+}
+
+// ===========================================================================
+// K25/K26 pulse-information historical decode — one row per frame,
+// persisted separately from K24 biometric records.
+// ===========================================================================
+
+/// One decoded K25/K26 pulse-info record. optical_dc is the integrated
+/// optical ADC (~254k–274k), skin_temp_raw is a slowly-varying ADC (~15400).
+/// imu_samples holds 24 signed i16 values (8 XYZ triples at ~8 Hz):
+/// [x0,y0,z0, x1,y1,z1, ..., x7,y7,z7] — raw accelerometer counts.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Gen4K25Record {
+    pub ts: i64,
+    pub optical_dc: Option<i64>,
+    pub skin_temp_raw: Option<i64>,
+    pub imu_samples: Vec<i64>,
+}
+
+/// Decode all K25/K26 HISTORICAL_DATA frames into `Gen4K25Record`s.
+pub fn decode_k25_records(frames: &[Gen4Frame]) -> Vec<Gen4K25Record> {
+    let mut out = Vec::new();
+    for frame in frames {
+        if !frame.ok || frame.crc_ok == Some(false) || frame.type_name != "HISTORICAL_DATA" {
+            continue;
+        }
+        let p = &frame.parsed;
+        match p_i64(p, "hist_version") {
+            Some(25) | Some(26) => {}
+            _ => continue,
+        }
+        let Some(ts) = p_i64(p, "unix") else { continue };
+        // Re-decode raw bytes to extract the 24×i16 IMU block at frame[23..71].
+        let imu_samples = crate::protocol::decode_hex_with_whitespace(&frame.raw_hex)
+            .map(|bytes| i16_block(&bytes, 23, 24))
+            .unwrap_or_default();
+        out.push(Gen4K25Record {
+            ts,
+            optical_dc: p_i64(p, "optical_dc"),
+            skin_temp_raw: p_i64(p, "skin_temp_raw"),
+            imu_samples,
+        });
+    }
+    out
+}
+
+// ===========================================================================
+// SpO2 — ratio-of-ratios over a sliding window of K24 records.
+//
+// Port of units.py §1 (TI SLAA655 / Mendelson & Ochs 1988).
+// Constants are UN-CALIBRATED textbook starting points; expect several %
+// error until fit_spo2() is run against a reference pulse-ox dataset.
+// ===========================================================================
+
+const SPO2_A: f64 = 110.0;
+const SPO2_B: f64 = 25.0;
+const SPO2_CLAMP_LO: f64 = 70.0;
+const SPO2_CLAMP_HI: f64 = 100.0;
+const SPO2_PERFUSION_CEILING: f64 = 0.10; // AC/DC > 10% → motion artefact
+
+/// One computed SpO2 estimate anchored at `ts` (the last sample in its window).
+#[derive(Debug, Clone, Serialize)]
+pub struct Spo2Estimate {
+    pub ts: i64,
+    pub spo2: f64,
+    pub r_value: f64,
+    /// True when the window was motion-rejected and the crude DC ratio was used.
+    pub motion_rejected: bool,
+}
+
+fn median_sorted(sorted: &[f64]) -> f64 {
+    let n = sorted.len();
+    if n == 0 {
+        return 0.0;
+    }
+    if n % 2 == 0 {
+        (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
+    } else {
+        sorted[n / 2]
+    }
+}
+
+fn mad(values: &[f64]) -> f64 {
+    if values.len() < 2 {
+        return 0.0;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let med = median_sorted(&sorted);
+    let mut devs: Vec<f64> = values.iter().map(|x| (x - med).abs()).collect();
+    devs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    median_sorted(&devs)
+}
+
+fn robust_spread(values: &[f64]) -> f64 {
+    if values.len() < 2 {
+        return 0.0;
+    }
+    let m = mad(values);
+    if m > 0.0 {
+        return 1.4826 * m;
+    }
+    // MAD = 0 → constant segment; fall back to IQR
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = sorted.len();
+    sorted[(3 * n) / 4] - sorted[n / 4]
+}
+
+/// Remove linear trend (least-squares fit) from a slice of values.
+fn detrend(values: &[f64]) -> Vec<f64> {
+    let n = values.len();
+    if n < 2 {
+        return values.to_vec();
+    }
+    let n_f = n as f64;
+    let mean_t = (n_f - 1.0) / 2.0;
+    let mean_x: f64 = values.iter().sum::<f64>() / n_f;
+    let var_t: f64 = (0..n).map(|i| { let d = i as f64 - mean_t; d * d }).sum();
+    let cov: f64 = values
+        .iter()
+        .enumerate()
+        .map(|(i, x)| (i as f64 - mean_t) * (x - mean_x))
+        .sum();
+    let slope = cov / var_t;
+    values
+        .iter()
+        .enumerate()
+        .map(|(i, x)| x - (slope * (i as f64 - mean_t) + mean_x))
+        .collect()
+}
+
+fn spo2_from_r(r: f64) -> f64 {
+    (SPO2_A - SPO2_B * r).clamp(SPO2_CLAMP_LO, SPO2_CLAMP_HI)
+}
+
+/// Compute the ratio-of-ratios R for a window of (red, ir) pairs.
+/// Returns None if the window is degenerate or motion-rejected.
+pub fn compute_spo2_window(reds: &[f64], irs: &[f64]) -> Option<f64> {
+    if reds.len() != irs.len() || reds.len() < 2 {
+        return None;
+    }
+    let dc_red: f64 = reds.iter().sum::<f64>() / reds.len() as f64;
+    let dc_ir: f64 = irs.iter().sum::<f64>() / irs.len() as f64;
+    if dc_red <= 0.0 || dc_ir <= 0.0 {
+        return None;
+    }
+    let det_red = detrend(reds);
+    let det_ir = detrend(irs);
+    let ac_red = robust_spread(&det_red);
+    let ac_ir = robust_spread(&det_ir);
+    if ac_ir < 1e-6 * dc_ir {
+        return None; // IR channel flat → R undefined
+    }
+    if ac_red / dc_red > SPO2_PERFUSION_CEILING || ac_ir / dc_ir > SPO2_PERFUSION_CEILING {
+        return None; // motion artefact
+    }
+    Some((ac_red / dc_red) / (ac_ir / dc_ir))
+}
+
+/// Compute a SpO2 time series from K24 history records using a sliding window.
+/// `window` is the number of 1 Hz samples per estimate (minimum 2, default 15).
+/// Each output sample is anchored at the timestamp of the last record in its window.
+pub fn compute_spo2_series(records: &[Gen4HistoryRecord], window: usize) -> Vec<Spo2Estimate> {
+    let window = window.max(2);
+    let mut out = Vec::new();
+    for end in window..=records.len() {
+        let slice = &records[end - window..end];
+        let ts = slice.last().unwrap().ts;
+        let reds: Vec<f64> = slice.iter().filter_map(|r| r.spo2_red.map(|v| v as f64)).collect();
+        let irs: Vec<f64> = slice.iter().filter_map(|r| r.spo2_ir.map(|v| v as f64)).collect();
+        if reds.len() < window || irs.len() < window {
+            continue; // gap in data — skip window
+        }
+        if let Some(r) = compute_spo2_window(&reds, &irs) {
+            out.push(Spo2Estimate { ts, spo2: spo2_from_r(r), r_value: r, motion_rejected: false });
+        } else {
+            // Motion-rejected fallback: crude DC ratio
+            let dc_red: f64 = reds.iter().sum::<f64>() / reds.len() as f64;
+            let dc_ir: f64 = irs.iter().sum::<f64>() / irs.len() as f64;
+            if dc_ir > 0.0 {
+                let r = dc_red / dc_ir;
+                out.push(Spo2Estimate { ts, spo2: spo2_from_r(r), r_value: r, motion_rejected: true });
+            }
+        }
+    }
+    out
+}
+
+// ===========================================================================
+// 437 Hz realtime green PPG — beat detection from type-43 REALTIME_RAW_DATA
+// ===========================================================================
+
+/// One detected heartbeat from the 437 Hz AC-coupled green PPG waveform.
+#[derive(Debug, Clone, Serialize)]
+pub struct Gen4PpgBeat {
+    /// Unix timestamp of the R-peak in milliseconds.
+    pub ts_ms: i64,
+    /// RR interval from the previous beat in milliseconds (0 for the first beat in a buffer).
+    pub rr_ms: i64,
+}
+
+/// Extract the 419 AC-coupled s24 samples from a type-43 REALTIME_RAW_DATA optical frame,
+/// paired with the reception time of the packet's last sample.
+///
+/// `packets` is a slice of `(hex_string, received_ms)` where `received_ms` is the
+/// wall-clock time the Swift layer received the BLE notification (not an embedded timestamp).
+pub fn decode_ppg_packets(packets: &[(String, i64)]) -> Vec<(Vec<i64>, i64)> {
+    const PPG_OFF: usize = 42;
+    const PPG_STRIDE: usize = 4;
+    const PPG_SAMPLES: usize = 419;
+
+    let mut out = Vec::new();
+    for (hex, received_ms) in packets {
+        let Ok(bytes) = crate::protocol::decode_hex_with_whitespace(hex) else {
+            continue;
+        };
+        if bytes.len() < PPG_OFF + PPG_SAMPLES * PPG_STRIDE {
+            continue;
+        }
+        // byte[4] = packet type 0x2B (43 = REALTIME_RAW_DATA)
+        // byte[5] = packet_k: 0x0A = K10 motion/HR (reject), 0x0B = K11 optical PPG (accept)
+        if bytes.len() < 6 || bytes[4] != 0x2B || bytes[5] != 0x0B {
+            continue;
+        }
+        let mut vals = Vec::with_capacity(PPG_SAMPLES);
+        for i in 0..PPG_SAMPLES {
+            let off = PPG_OFF + i * PPG_STRIDE;
+            if off + 3 > bytes.len() {
+                break;
+            }
+            let raw = (bytes[off] as i32)
+                | ((bytes[off + 1] as i32) << 8)
+                | ((bytes[off + 2] as i32) << 16);
+            // Sign-extend from 24-bit two's complement
+            let v = if raw & 0x0080_0000 != 0 { raw | -0x0100_0000i32 } else { raw };
+            vals.push(v as i64);
+        }
+        if !vals.is_empty() {
+            out.push((vals, *received_ms));
+        }
+    }
+    out
+}
+
+/// Detect heartbeat peaks from a sequence of 437 Hz AC-coupled PPG packets.
+///
+/// Each `(samples, received_ms)` pair represents one type-43 packet where `received_ms`
+/// is the wall-clock arrival of the packet (i.e., the timestamp of the *last* sample).
+/// Returns one `Gen4PpgBeat` per detected R-peak with physiologically valid RR intervals.
+pub fn detect_ppg_beats(packets: &[(Vec<i64>, i64)]) -> Vec<Gen4PpgBeat> {
+    const RATE_HZ: f64 = 437.0;
+    // 175 samples = 400 ms → caps at ~150 bpm. Smoothing (below) handles the dicrotic notch
+    // so MIN_PEAK_DIST only needs to guard against sub-physiological noise.
+    const MIN_PEAK_DIST: usize = 175;
+    const RR_MIN_MS: i64 = 300;
+    const RR_MAX_MS: i64 = 2500;
+
+    if packets.is_empty() {
+        return vec![];
+    }
+
+    let total: usize = packets.iter().map(|(s, _)| s.len()).sum();
+    let mut all_samples: Vec<i64> = Vec::with_capacity(total);
+    let mut all_ts_ms: Vec<i64> = Vec::with_capacity(total);
+    for (samples, received_ms) in packets {
+        let n = samples.len();
+        for (j, &s) in samples.iter().enumerate() {
+            let offset_ms = ((n - 1 - j) as f64 * 1000.0 / RATE_HZ).round() as i64;
+            all_ts_ms.push(received_ms - offset_ms);
+            all_samples.push(s);
+        }
+    }
+
+    // 110-sample (~252 ms) box filter. First null at Fs/W = 437/110 ≈ 4 Hz, which falls
+    // right on the 2nd harmonic of resting HR (~2 Hz at 60 bpm) — the frequency that
+    // drives the dicrotic notch. The fundamental (1 Hz) passes at ~88% amplitude.
+    let smooth_win = 110usize;
+    let smoothed: Vec<i64> = (0..all_samples.len())
+        .map(|i| {
+            let lo = i.saturating_sub(smooth_win / 2);
+            let hi = (i + smooth_win / 2 + 1).min(all_samples.len());
+            let sum: i64 = all_samples[lo..hi].iter().sum();
+            sum / (hi - lo) as i64
+        })
+        .collect();
+
+    // Try both polarities — AC-coupled PPG may be inverted depending on the optical stack.
+    let peak_pos = find_peaks_with_min_dist(&smoothed, MIN_PEAK_DIST, false);
+    let peak_neg = find_peaks_with_min_dist(&smoothed, MIN_PEAK_DIST, true);
+    let rms = |idxs: &[usize]| -> f64 {
+        if idxs.is_empty() {
+            return 0.0;
+        }
+        (idxs.iter().map(|&i| (smoothed[i] as f64).powi(2)).sum::<f64>()
+            / idxs.len() as f64)
+            .sqrt()
+    };
+    let peaks = if rms(&peak_pos) >= rms(&peak_neg) { peak_pos } else { peak_neg };
+
+    // Compute RR from sample-index differences, not timestamp differences.
+    // BLE notification delivery has jitter (±100 ms typical) so received_ms is only reliable
+    // as an absolute anchor; consecutive timestamps can't be trusted for sub-second intervals.
+    // Sample indices are crystal-accurate at 437 Hz.
+    let mut beats = Vec::new();
+    let mut prev_idx: Option<usize> = None;
+    for &idx in &peaks {
+        let ts_ms = all_ts_ms[idx];
+        let rr_ms = match prev_idx {
+            Some(p) => ((idx - p) as f64 * 1000.0 / RATE_HZ).round() as i64,
+            None => 0,
+        };
+        if rr_ms == 0 || (rr_ms >= RR_MIN_MS && rr_ms <= RR_MAX_MS) {
+            beats.push(Gen4PpgBeat { ts_ms, rr_ms });
+            prev_idx = Some(idx);
+        }
+    }
+    beats
+}
+
+// ---------------------------------------------------------------------------
+// Resting HR — minimum 10-minute rolling average from 1 Hz HR samples
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct Gen4RestingHrResult {
+    pub bpm: f64,
+    pub sample_count: usize,
+}
+
+/// Compute resting HR as the minimum 10-minute (600-sample) rolling average.
+/// Returns `None` when fewer than 600 samples are available.
+pub fn compute_resting_hr(hr_series: &[i64]) -> Option<Gen4RestingHrResult> {
+    const WINDOW: usize = 600;
+    if hr_series.len() < WINDOW {
+        return None;
+    }
+    let mut window_sum: f64 = hr_series[..WINDOW].iter().map(|&v| v as f64).sum();
+    let mut min_avg = window_sum / WINDOW as f64;
+    for i in 1..=(hr_series.len() - WINDOW) {
+        window_sum += hr_series[i + WINDOW - 1] as f64 - hr_series[i - 1] as f64;
+        let avg = window_sum / WINDOW as f64;
+        if avg < min_avg {
+            min_avg = avg;
+        }
+    }
+    Some(Gen4RestingHrResult {
+        bpm: (min_avg * 10.0).round() / 10.0,
+        sample_count: hr_series.len(),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// HRV RMSSD — from Gen4 PPG beat RR intervals
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct Gen4HrvRmssdResult {
+    pub rmssd_ms: f64,
+    pub rr_count: usize,
+    /// Always 1 for live computation; kept for interface parity with Gen5 path.
+    pub chunk_count: usize,
+}
+
+/// Compute RMSSD from a slice of RR intervals (ms). Returns `None` when fewer
+/// than 3 intervals are available (need ≥2 successive differences).
+pub fn compute_hrv_rmssd(rr_series: &[i64]) -> Option<Gen4HrvRmssdResult> {
+    if rr_series.len() < 3 {
+        return None;
+    }
+    let diffs_sq: Vec<f64> = rr_series
+        .windows(2)
+        .map(|w| ((w[1] - w[0]) as f64).powi(2))
+        .collect();
+    let rmssd = (diffs_sq.iter().sum::<f64>() / diffs_sq.len() as f64).sqrt();
+    Some(Gen4HrvRmssdResult {
+        rmssd_ms: (rmssd * 10.0).round() / 10.0,
+        rr_count: rr_series.len(),
+        chunk_count: 1,
+    })
+}
+
+fn find_peaks_with_min_dist(samples: &[i64], min_dist: usize, invert: bool) -> Vec<usize> {
+    if samples.len() < 3 {
+        return vec![];
+    }
+    let sig: Vec<i64> = if invert {
+        samples.iter().map(|&x| -x).collect()
+    } else {
+        samples.to_vec()
+    };
+
+    let candidates: Vec<usize> = (1..sig.len() - 1)
+        .filter(|&i| sig[i] > sig[i - 1] && sig[i] >= sig[i + 1])
+        .collect();
+    if candidates.is_empty() {
+        return vec![];
+    }
+
+    let peak_vals: Vec<f64> = candidates.iter().map(|&i| sig[i] as f64).collect();
+    let mean = peak_vals.iter().sum::<f64>() / peak_vals.len() as f64;
+    let std = (peak_vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>()
+        / peak_vals.len() as f64)
+        .sqrt();
+    let threshold = mean - 0.3 * std;
+
+    let mut peaks: Vec<usize> = Vec::new();
+    for &c in &candidates {
+        if (sig[c] as f64) < threshold {
+            continue;
+        }
+        if let Some(&last) = peaks.last() {
+            if c - last < min_dist {
+                if sig[c] > sig[last] {
+                    *peaks.last_mut().unwrap() = c;
+                }
+                continue;
+            }
+        }
+        peaks.push(c);
+    }
+    peaks
 }

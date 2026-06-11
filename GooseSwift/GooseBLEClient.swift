@@ -37,6 +37,7 @@ final class GooseBLEClient: NSObject, ObservableObject {
   @Published var softwareRevision: String?
   @Published var manufacturerName: String?
   @Published var isHistoricalSyncing = false
+  @Published var isGen4PpgCapturing = false
   @Published var historicalSyncStatus = "idle"
   @Published var historicalPacketCount = 0
   @Published var lastHistoricalSyncCompletedAt: Date?

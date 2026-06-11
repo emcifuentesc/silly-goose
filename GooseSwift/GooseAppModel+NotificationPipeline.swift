@@ -84,6 +84,9 @@ extension GooseAppModel {
       return
     }
 
+    accumulateGen4HistoryFramesIfNeeded(result)
+    accumulateGen4PpgFramesIfNeeded(result)
+
     importCapturedFrames(frames, event: event)
 
     parseNotificationFrames(frames, event: event)
@@ -122,6 +125,8 @@ extension GooseAppModel {
     guard !frames.isEmpty else {
       return
     }
+    accumulateGen4HistoryFramesIfNeeded(result)
+    accumulateGen4PpgFramesIfNeeded(result)
     parseNotificationFrames(frames, event: event, context: parseContext)
   }
 
@@ -534,7 +539,9 @@ extension GooseAppModel {
         heartRateBPM: nil,
         movementSample: nil,
         whoopEvent: nil,
-        dataSignal: nil
+        dataSignal: nil,
+        batteryPercent: nil,
+        batteryCharging: nil
       )
     }
 
@@ -558,7 +565,9 @@ extension GooseAppModel {
       whoopEvent: extractWhoopEvent(from: compact, capturedAt: event.capturedAt)
         ?? parsed.flatMap { extractWhoopEvent(from: $0, capturedAt: event.capturedAt) },
       dataSignal: extractWhoopDataSignal(from: compact, capturedAt: event.capturedAt)
-        ?? parsed.flatMap { extractWhoopDataSignal(from: $0, capturedAt: event.capturedAt) }
+        ?? parsed.flatMap { extractWhoopDataSignal(from: $0, capturedAt: event.capturedAt) },
+      batteryPercent: compact?.batteryPercent,
+      batteryCharging: compact?.batteryCharging
     )
   }
 
@@ -570,7 +579,8 @@ extension GooseAppModel {
       || interpretation.heartRateBPM != nil
       || interpretation.movementSample != nil
       || interpretation.whoopEvent != nil
-      || interpretation.dataSignal != nil {
+      || interpretation.dataSignal != nil
+      || interpretation.batteryPercent != nil {
       return true
     }
     if overnightGuardActive, let packetType = interpretation.packetType {
@@ -657,6 +667,14 @@ extension GooseAppModel {
     }
     if let dataSignal = interpretation.dataSignal {
       handleWhoopDataSignal(dataSignal)
+    }
+    if let pct = interpretation.batteryPercent {
+      let rounded = min(max(Int(pct.rounded()), 0), 100)
+      if let charging = interpretation.batteryCharging {
+        ble.batteryIsCharging = charging
+        ble.batteryPowerStatus = charging ? "Charging" : "Not Charging"
+      }
+      ble.applyBatteryLevel(rounded, capturedAt: event.capturedAt, sourceTitle: "battery.gen4_event")
     }
   }
 
@@ -849,6 +867,35 @@ extension GooseAppModel {
     "\(event.deviceID.uuidString)|\(event.serviceUUID)|\(event.characteristicUUID)|\(event.rustDeviceType)"
   }
 
+  // MARK: - Gen4 historical biometric persistence
+
+  /// During a WHOOP 4.0 historical sync, buffer the complete (main-pipeline-reassembled) frames so
+  /// they can be batch-persisted to `gen4_history_samples`. The Rust side filters to type-47
+  /// HISTORICAL_DATA records and decodes them, so passing every frame is safe; persistence is
+  /// idempotent (upsert by ts).
+  func accumulateGen4HistoryFramesIfNeeded(_ result: NotificationIngestResult) {
+    guard result.event.rustDeviceType == "GEN4", ble.isHistoricalSyncing, !result.frames.isEmpty else {
+      return
+    }
+    gen4HistoryAccumulator.accumulate(
+      frameHexes: result.frames.map(\.hex),
+      deviceID: result.event.deviceID.uuidString
+    )
+  }
+
+  /// During a WHOOP 4.0 realtime PPG session, buffer type-43 REALTIME_RAW_DATA frames for
+  /// beat detection. Only active for Gen4 when a realtime PPG capture is running.
+  func accumulateGen4PpgFramesIfNeeded(_ result: NotificationIngestResult) {
+    guard result.event.rustDeviceType == "GEN4", ble.isGen4PpgCapturing, !result.frames.isEmpty else {
+      return
+    }
+    let receivedMs = Int64(result.event.capturedAt.timeIntervalSince1970 * 1000)
+    let deviceID = result.event.deviceID.uuidString
+    for frame in result.frames {
+      gen4PpgAccumulator.accumulate(frameHex: frame.hex, receivedMs: receivedMs, deviceID: deviceID)
+    }
+  }
+
   static func frameSummary(_ parsed: [String: Any]) -> String {
     let packet = intString(parsed["packet_type"])
     let packetName = parsed["packet_type_name"] as? String ?? "unknown"
@@ -876,4 +923,156 @@ extension GooseAppModel {
     return "packet=\(packetName)(\(packet)) seq=\(sequence) payload=\(kind) warnings=\(warnings)"
   }
 
+}
+
+/// Off-main persistence of WHOOP 4.0 historical biometric records. Buffers the complete frames
+/// produced by the main reassembly pipeline during a sync and batch-writes them to
+/// `gen4_history_samples` via the `gen4.ingest_history` bridge method. All mutable state lives on
+/// the internal serial queue (hence `@unchecked Sendable`), keeping it off the main actor.
+final class Gen4HistoryAccumulator: @unchecked Sendable {
+  private let queue = DispatchQueue(label: "com.goose.swift.gen4-history", qos: .utility)
+  private let bridge = GooseRustBridge()
+  private let databasePath: String
+  private let flushThreshold: Int
+  private var buffer: [String] = []
+
+  /// Optional logger, invoked off the main actor. Set once at app-model init.
+  var logHandler: (@Sendable (GooseLogLevel, String) -> Void)?
+
+  init(databasePath: String, flushThreshold: Int = 512) {
+    self.databasePath = databasePath
+    self.flushThreshold = flushThreshold
+  }
+
+  /// Buffer frames for persistence; flushes automatically once the batch threshold is reached.
+  func accumulate(frameHexes: [String], deviceID: String) {
+    guard !frameHexes.isEmpty, !deviceID.isEmpty else {
+      return
+    }
+    queue.async { [self] in
+      buffer.append(contentsOf: frameHexes)
+      if buffer.count >= flushThreshold {
+        flushLocked(deviceID: deviceID)
+      }
+    }
+  }
+
+  /// Flush any buffered frames (e.g. when a sync completes).
+  func flush(deviceID: String) {
+    guard !deviceID.isEmpty else {
+      return
+    }
+    queue.async { [self] in
+      flushLocked(deviceID: deviceID)
+    }
+  }
+
+  /// MUST run on `queue`. Drains the buffer through `gen4.ingest_history`.
+  private func flushLocked(deviceID: String) {
+    guard !buffer.isEmpty else {
+      return
+    }
+    let frames = buffer
+    buffer.removeAll(keepingCapacity: true)
+    do {
+      let response = try bridge.request(
+        method: "gen4.ingest_history",
+        args: [
+          "database_path": databasePath,
+          "device_id": deviceID,
+          "frames": frames,
+        ]
+      )
+      let written = (response["records_written"] as? Int) ?? 0
+      let k25Written = (response["k25_records_written"] as? Int) ?? 0
+      // Frame type breakdown (e.g. {"HISTORICAL_DATA":50,"metadata":2}) from the Rust decoder.
+      let typeCounts = response["frame_type_counts"] as? [String: Any] ?? [:]
+      let typesSummary = typeCounts.sorted { $0.key < $1.key }
+        .map { "\($0.key)=\($0.value)" }.joined(separator: " ")
+      if written > 0 || k25Written > 0 {
+        let k25Suffix = k25Written > 0 ? " k25=\(k25Written)" : ""
+        logHandler?(.warn, "persisted records=\(written)\(k25Suffix) from frames=\(frames.count) types=[\(typesSummary)]")
+      } else {
+        logHandler?(.warn, "flushed frames=\(frames.count) records_written=0 types=[\(typesSummary)]")
+      }
+      // Log unique firmware console lines so we can see what the band is reporting about
+      // its sensor state (these appear when K47 recording is broken).
+      if let consoleLogs = response["console_logs"] as? [String], !consoleLogs.isEmpty {
+        logHandler?(.warn, "firmware console (\(consoleLogs.count) unique): \(consoleLogs.joined(separator: " | "))")
+      }
+      // Log raw hex for unrecognised HISTORICAL_DATA versions (e.g. K25/K26) so we can
+      // reverse-engineer their byte layout from real captures.
+      if let samples = response["unknown_version_samples"] as? [[String: Any]] {
+        for sample in samples {
+          let v = sample["version"] as? Int ?? -1
+          let hex = sample["hex"] as? String ?? ""
+          logHandler?(.warn, "unknown hist v\(v) sample hex=\(hex)")
+        }
+      }
+    } catch {
+      logHandler?(.warn, "ingest failed: \(error)")
+    }
+  }
+}
+
+/// Off-main persistence of WHOOP 4.0 realtime 437 Hz green PPG beats. Buffers the type-43
+/// REALTIME_RAW_DATA packets produced while `SEND_R10_R11_REALTIME` is active, then flushes
+/// them through the `gen4.ingest_ppg` bridge for beat detection and storage.
+/// All mutable state lives on the internal serial queue (hence `@unchecked Sendable`).
+final class Gen4PpgAccumulator: @unchecked Sendable {
+  private let queue = DispatchQueue(label: "com.goose.swift.gen4-ppg", qos: .utility)
+  private let bridge = GooseRustBridge()
+  private let databasePath: String
+  private let flushThreshold: Int
+  private var buffer: [(hex: String, receivedMs: Int64)] = []
+
+  var logHandler: (@Sendable (GooseLogLevel, String) -> Void)?
+  var onBeatsWritten: (@Sendable (String) -> Void)?
+
+  init(databasePath: String, flushThreshold: Int = 8) {
+    self.databasePath = databasePath
+    self.flushThreshold = flushThreshold
+  }
+
+  func accumulate(frameHex: String, receivedMs: Int64, deviceID: String) {
+    guard !frameHex.isEmpty, !deviceID.isEmpty else { return }
+    queue.async { [self] in
+      buffer.append((hex: frameHex, receivedMs: receivedMs))
+      if buffer.count >= flushThreshold {
+        flushLocked(deviceID: deviceID)
+      }
+    }
+  }
+
+  func flush(deviceID: String) {
+    guard !deviceID.isEmpty else { return }
+    queue.async { [self] in flushLocked(deviceID: deviceID) }
+  }
+
+  private func flushLocked(deviceID: String) {
+    guard !buffer.isEmpty else { return }
+    let packets = buffer
+    buffer.removeAll(keepingCapacity: true)
+    let packetArgs = packets.map { p -> [String: Any] in
+      ["hex": p.hex, "received_ms": p.receivedMs]
+    }
+    do {
+      let response = try bridge.request(
+        method: "gen4.ingest_ppg",
+        args: [
+          "database_path": databasePath,
+          "device_id": deviceID,
+          "packets": packetArgs,
+        ]
+      )
+      let beatsWritten = (response["beats_written"] as? Int) ?? 0
+      let decoded = (response["packets_decoded"] as? Int) ?? 0
+      if beatsWritten > 0 {
+        logHandler?(.warn, "ppg beats=\(beatsWritten) from packets=\(decoded)")
+        onBeatsWritten?(deviceID)
+      }
+    } catch {
+      logHandler?(.warn, "ppg ingest failed: \(error)")
+    }
+  }
 }

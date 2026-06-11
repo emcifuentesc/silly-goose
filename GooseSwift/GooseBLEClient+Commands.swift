@@ -187,6 +187,10 @@ extension GooseBLEClient {
   }
 
   func writeClockCommand(_ kind: ClockCommandKind, syncIfNeeded: Bool) {
+    guard activeDeviceGeneration != .gen4 else {
+      record(level: .debug, source: "ble.clock", title: "clock.command.skipped", body: "gen4: clock commands not supported")
+      return
+    }
     guard !isHistoricalSyncing else {
       failClockCommand("Clock command blocked during historical sync.")
       return
@@ -372,6 +376,13 @@ extension GooseBLEClient {
     requestedStatus: String,
     updatePhysiologyStatus: Bool = true
   ) {
+    guard activeDeviceGeneration != .gen4 else {
+      // Gen4 sensor modes are managed exclusively through the handshake (cmds 106/107/108/153/154).
+      // The V5 sensor stream command path (start/stop physiology, R10/R11 realtime) must not run
+      // against Gen4 — it would toggle off sensors that the handshake just enabled.
+      record(level: .debug, source: "ble.sensor", title: "sensor.write.skipped", body: "gen4: sensor modes managed via handshake")
+      return
+    }
     guard !isHistoricalSyncing else {
       if updatePhysiologyStatus {
         physiologyCaptureStatus = "Blocked during historical sync"
