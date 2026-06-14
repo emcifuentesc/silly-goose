@@ -27,7 +27,7 @@ struct RecoveryV2ScenicBackground: View {
       Canvas { context, size in
         let primaryBand = filledRecoveryBand(
           size: size,
-          y: size.height * 0.24,
+          centerY: size.height * 0.24,
           height: size.height * 0.15,
           lift: size.height * 0.03
         )
@@ -38,7 +38,7 @@ struct RecoveryV2ScenicBackground: View {
 
         let secondaryBand = filledRecoveryBand(
           size: size,
-          y: size.height * 0.38,
+          centerY: size.height * 0.38,
           height: size.height * 0.12,
           lift: size.height * 0.02
         )
@@ -49,7 +49,7 @@ struct RecoveryV2ScenicBackground: View {
 
         let signalPath = recoverySignalPath(
           size: size,
-          y: size.height * 0.34,
+          centerY: size.height * 0.34,
           amplitude: size.height * 0.035
         )
         context.stroke(
@@ -74,12 +74,12 @@ struct RecoveryV2ScenicBackground: View {
     }
   }
 
-  private func filledRecoveryBand(size: CGSize, y: CGFloat, height: CGFloat, lift: CGFloat) -> Path {
+  private func filledRecoveryBand(size: CGSize, centerY: CGFloat, height: CGFloat, lift: CGFloat) -> Path {
     let width = max(size.width, 1)
     let left = -width * 0.08
     let right = width * 1.08
-    let top = y
-    let bottom = y + height
+    let top = centerY
+    let bottom = centerY + height
 
     var path = Path()
     path.move(to: CGPoint(x: left, y: top + lift))
@@ -108,25 +108,25 @@ struct RecoveryV2ScenicBackground: View {
     return path
   }
 
-  private func recoverySignalPath(size: CGSize, y: CGFloat, amplitude: CGFloat) -> Path {
+  private func recoverySignalPath(size: CGSize, centerY: CGFloat, amplitude: CGFloat) -> Path {
     let width = max(size.width, 1)
 
     var path = Path()
-    path.move(to: CGPoint(x: -width * 0.05, y: y))
+    path.move(to: CGPoint(x: -width * 0.05, y: centerY))
     path.addCurve(
-      to: CGPoint(x: width * 0.32, y: y - amplitude),
-      control1: CGPoint(x: width * 0.06, y: y + amplitude * 0.85),
-      control2: CGPoint(x: width * 0.18, y: y - amplitude * 1.25)
+      to: CGPoint(x: width * 0.32, y: centerY - amplitude),
+      control1: CGPoint(x: width * 0.06, y: centerY + amplitude * 0.85),
+      control2: CGPoint(x: width * 0.18, y: centerY - amplitude * 1.25)
     )
     path.addCurve(
-      to: CGPoint(x: width * 0.67, y: y + amplitude * 0.42),
-      control1: CGPoint(x: width * 0.46, y: y + amplitude * 0.25),
-      control2: CGPoint(x: width * 0.54, y: y + amplitude * 1.2)
+      to: CGPoint(x: width * 0.67, y: centerY + amplitude * 0.42),
+      control1: CGPoint(x: width * 0.46, y: centerY + amplitude * 0.25),
+      control2: CGPoint(x: width * 0.54, y: centerY + amplitude * 1.2)
     )
     path.addCurve(
-      to: CGPoint(x: width * 1.05, y: y - amplitude * 0.24),
-      control1: CGPoint(x: width * 0.80, y: y - amplitude * 0.62),
-      control2: CGPoint(x: width * 0.92, y: y - amplitude * 0.84)
+      to: CGPoint(x: width * 1.05, y: centerY - amplitude * 0.24),
+      control1: CGPoint(x: width * 0.80, y: centerY - amplitude * 0.62),
+      control2: CGPoint(x: width * 0.92, y: centerY - amplitude * 0.84)
     )
     return path
   }
@@ -211,14 +211,21 @@ struct RecoveryV2TrendCard: View {
 
   private var valueText: String {
     let trimmed = snapshot.value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, trimmed != "--" else {
+      return "—"
+    }
     if trimmed.hasSuffix("%") {
       return String(trimmed.dropLast())
     }
-    return trimmed.isEmpty ? "0" : trimmed
+    return trimmed
   }
 
   private var unitText: String {
-    if snapshot.value.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("%") || snapshot.unit == "%" {
+    let trimmed = snapshot.value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, trimmed != "--" else {
+      return ""
+    }
+    if trimmed.hasSuffix("%") || snapshot.unit == "%" {
       return "%"
     }
     return snapshot.unit
@@ -351,9 +358,9 @@ struct RecoveryV2TrendBand: View {
     domain: (min: Double, max: Double)
   ) -> CGPoint {
     let span = max(domain.max - domain.min, 1)
-    let x = rect.minX + CGFloat(index) / CGFloat(max(count - 1, 1)) * rect.width
+    let pointX = rect.minX + CGFloat(index) / CGFloat(max(count - 1, 1)) * rect.width
     let normalized = (value - domain.min) / span
-    let y = rect.maxY - CGFloat(normalized) * rect.height
-    return CGPoint(x: x, y: y)
+    let pointY = rect.maxY - CGFloat(normalized) * rect.height
+    return CGPoint(x: pointX, y: pointY)
   }
 }

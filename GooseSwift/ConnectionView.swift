@@ -21,6 +21,9 @@ private struct ConnectionContentView: View {
         LabeledContent("Connection", value: ble.connectionState)
         LabeledContent("Reconnect", value: ble.reconnectState)
         LabeledContent("Historical", value: historicalSyncValue)
+        if let duration = model.ble.lastHistoricalSyncDuration {
+          LabeledContent("Last sync", value: Self.formatSyncDuration(duration))
+        }
         LabeledContent("Remembered", value: ble.rememberedDeviceDescription)
         LabeledContent("Live HR", value: liveHeartRateValue)
         LabeledContent("Rust", value: model.rustStatus)
@@ -141,5 +144,17 @@ private struct ConnectionContentView: View {
       return "\(ble.historicalSyncStatus) | \(packets) @ \(completedAt.formatted(date: .omitted, time: .standard))"
     }
     return "\(ble.historicalSyncStatus) | \(packets)"
+  }
+
+  private static func formatSyncDuration(_ duration: TimeInterval) -> String {
+    if duration < 1 {
+      return "<1s"
+    }
+    if duration < 60 {
+      return "\(Int(duration.rounded()))s"
+    }
+    let minutes = Int(duration / 60)
+    let seconds = Int(duration.truncatingRemainder(dividingBy: 60))
+    return "\(minutes)m \(seconds)s"
   }
 }

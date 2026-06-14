@@ -9,13 +9,12 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::{
-    GooseError, GooseResult,
     activity_sessions::{
-        ActivitySessionCorrectionKind, activity_session_correction_plans,
-        append_activity_session_correction_history,
+        activity_session_correction_plans, append_activity_session_correction_history,
+        ActivitySessionCorrectionKind,
     },
     algorithm_compare::{
         compare_hrv_goose_to_reference, compare_sleep_goose_to_external_reference_report,
@@ -24,51 +23,63 @@ use crate::{
         compare_stress_goose_to_reference,
     },
     calibration::{
+        apply_calibration, calibration_run_record, evaluate_linear_calibration,
         CalibrationApplicationInput, CalibrationDataset, CalibrationOptions, CalibrationRecord,
-        CalibrationReport, apply_calibration, calibration_run_record, evaluate_linear_calibration,
+        CalibrationReport,
     },
     capture_correlation::{
-        CaptureCorrelationNextAction, CaptureCorrelationOptions, CaptureCorrelationReport,
-        DEFAULT_MIN_OWNED_CAPTURES_PER_SUMMARY, run_capture_correlation_for_store,
+        run_capture_correlation_for_store, CaptureCorrelationNextAction, CaptureCorrelationOptions,
+        CaptureCorrelationReport, DEFAULT_MIN_OWNED_CAPTURES_PER_SUMMARY,
     },
     capture_import::{
-        CapturedFrameBatchOptions, CapturedFrameBatchOutputOptions, CapturedFrameInput,
-        import_captured_frame_batch_with_output_options,
+        import_captured_frame_batch_with_output_options, CapturedFrameBatchOptions,
+        CapturedFrameBatchOutputOptions, CapturedFrameInput,
     },
-    capture_sanitize::{CaptureSanitizeOptions, sanitize_capture_path},
+    capture_sanitize::{sanitize_capture_path, CaptureSanitizeOptions},
     commands::{
-        COMMAND_DEFINITIONS, CommandEmulatorLogEvidenceOptions, CommandEvidence,
-        CommandLocalFrameCandidate, CommandValidationResult, command_capture_plan_from_results,
-        command_evidence_from_emulator_log_text, command_evidence_template,
-        command_evidence_with_local_frame_matches, command_result_from_report_json,
-        direct_send_gate_from_result, direct_send_preflight_from_gate, validate_commands,
+        command_capture_plan_from_results, command_evidence_from_emulator_log_text,
+        command_evidence_template, command_evidence_with_local_frame_matches,
+        command_result_from_report_json, direct_send_gate_from_result,
+        direct_send_preflight_from_gate, validate_commands, CommandEmulatorLogEvidenceOptions,
+        CommandEvidence, CommandLocalFrameCandidate, CommandValidationResult, COMMAND_DEFINITIONS,
     },
     debug_ws::{
-        DebugBridgeConfig, DebugCommandEnvelope, DebugCommandFinishInput, DebugCommandStartInput,
-        DebugEventInput, DebugSessionStartInput, append_debug_event, debug_session_snapshot,
-        finish_debug_command, start_debug_command, start_debug_session,
+        append_debug_event, debug_session_snapshot, finish_debug_command, start_debug_command,
+        start_debug_session, DebugBridgeConfig, DebugCommandEnvelope, DebugCommandFinishInput,
+        DebugCommandStartInput, DebugEventInput, DebugSessionStartInput,
     },
     energy_rollup::{
-        EnergyCaptureValidationOptions, EnergyDailyRollupOptions, EnergyHourlyRollupOptions,
         rollup_energy_day_for_store, rollup_energy_hour_for_store,
         rollup_energy_unavailable_daily_status_for_store, validate_energy_capture_for_store,
+        EnergyCaptureValidationOptions, EnergyDailyRollupOptions, EnergyHourlyRollupOptions,
     },
-    export::{RawExportFilters, RawExportOptions, export_raw_timeframe, validate_export_bundle},
+    export::{export_raw_timeframe, validate_export_bundle, RawExportFilters, RawExportOptions},
     health_sync::{
-        ActivityHealthSyncDryRunInput, HealthSyncDryRunInput, run_activity_health_sync_dry_run,
-        run_health_sync_dry_run,
+        run_activity_health_sync_dry_run, run_health_sync_dry_run, ActivityHealthSyncDryRunInput,
+        HealthSyncDryRunInput,
     },
     historical_sync::{
-        HistoricalSyncDryRunInput, HistoricalSyncGeneration, HistoricalSyncPhysicalValidationInput,
         historical_sync_physical_evidence_template, run_historical_sync_dry_run,
-        validate_historical_sync_physical_evidence,
+        validate_historical_sync_physical_evidence, HistoricalSyncDryRunInput,
+        HistoricalSyncGeneration, HistoricalSyncPhysicalValidationInput,
+    },
+    k25_motion_estimator::{
+        run_k25_imu_activity_estimate_for_store, K25ImuActivityEstimateOptions,
     },
     local_health_validation::{
-        LocalHealthValidationManifestScaffoldOptions,
         local_health_validation_manifest_runbook_markdown, review_local_health_validation_manifest,
-        scaffold_local_health_validation_manifest,
+        scaffold_local_health_validation_manifest, LocalHealthValidationManifestScaffoldOptions,
     },
     metric_features::{
+        run_heart_rate_feature_report_for_store, run_hrv_capture_validation_for_store,
+        run_hrv_feature_report_for_store, run_metric_window_feature_report_for_store,
+        run_motion_feature_report_for_store, run_oxygen_saturation_capture_validation_for_store,
+        run_recovery_feature_score_report_for_store,
+        run_recovery_sensor_discovery_report_for_store,
+        run_respiratory_rate_capture_validation_for_store,
+        run_resting_heart_rate_feature_report_for_store, run_sleep_feature_score_report_for_store,
+        run_strain_feature_score_report_for_store, run_stress_feature_score_report_for_store,
+        run_temperature_capture_validation_for_store, run_vital_event_feature_report_for_store,
         HeartRateFeatureOptions, HrvCaptureValidationOptions, HrvFeatureOptions,
         MetricFeatureNextAction, MetricWindowFeatureOptions, MotionFeatureOptions,
         OxygenSaturationCaptureValidationOptions, RecoveryFeatureScoreOptions,
@@ -76,88 +87,80 @@ use crate::{
         RespiratoryRateCaptureValidationOptions, RestingHeartRateFeatureOptions,
         SleepFeatureScoreOptions, SleepFeatureScoreReport, SleepStageKind,
         StrainFeatureScoreOptions, StressFeatureScoreOptions, TemperatureCaptureValidationOptions,
-        VitalEventFeatureOptions, run_heart_rate_feature_report_for_store,
-        run_hrv_capture_validation_for_store, run_hrv_feature_report_for_store,
-        run_metric_window_feature_report_for_store, run_motion_feature_report_for_store,
-        run_oxygen_saturation_capture_validation_for_store,
-        run_recovery_feature_score_report_for_store,
-        run_recovery_sensor_discovery_report_for_store,
-        run_respiratory_rate_capture_validation_for_store,
-        run_resting_heart_rate_feature_report_for_store, run_sleep_feature_score_report_for_store,
-        run_strain_feature_score_report_for_store, run_stress_feature_score_report_for_store,
-        run_temperature_capture_validation_for_store, run_vital_event_feature_report_for_store,
+        VitalEventFeatureOptions,
     },
     metric_readiness::{
-        MetricInputNextAction, MetricInputReadinessOptions, MetricInputReadinessReport,
-        run_metric_input_readiness,
+        run_metric_input_readiness, MetricInputNextAction, MetricInputReadinessOptions,
+        MetricInputReadinessReport,
     },
     metrics::{
-        AlgorithmRunResult, GOOSE_HRV_V0_ID, GOOSE_HRV_V0_VERSION, GOOSE_RECOVERY_V0_ID,
-        GOOSE_RECOVERY_V0_VERSION, GOOSE_SLEEP_V0_ID, GOOSE_SLEEP_V0_VERSION, GOOSE_SLEEP_V1_ID,
-        GOOSE_SLEEP_V1_VERSION, GOOSE_STRAIN_V0_ID, GOOSE_STRAIN_V0_VERSION, GOOSE_STRESS_V0_ID,
-        GOOSE_STRESS_V0_VERSION, HrvInput, RecoveryInput, SleepInput, SleepModelStatusInput,
-        SleepNightHistoryInput, SleepStageSegment, SleepV1Input, StrainInput, StressInput,
         algorithm_run_record, built_in_algorithm_definitions,
         built_in_default_algorithm_preferences, default_algorithm_preferences_for_scope,
         goose_hrv_v0, goose_recovery_v0, goose_sleep_v0, goose_sleep_v1, goose_strain_v0,
-        goose_stress_v0, sleep_history_night_is_usable,
+        goose_stress_v0, sleep_history_night_is_usable, AlgorithmRunResult, HrvInput,
+        RecoveryInput, SleepInput, SleepModelStatusInput, SleepNightHistoryInput,
+        SleepStageSegment, SleepV1Input, StrainInput, StressInput, GOOSE_HRV_V0_ID,
+        GOOSE_HRV_V0_VERSION, GOOSE_RECOVERY_V0_ID, GOOSE_RECOVERY_V0_VERSION, GOOSE_SLEEP_V0_ID,
+        GOOSE_SLEEP_V0_VERSION, GOOSE_SLEEP_V1_ID, GOOSE_SLEEP_V1_VERSION, GOOSE_STRAIN_V0_ID,
+        GOOSE_STRAIN_V0_VERSION, GOOSE_STRESS_V0_ID, GOOSE_STRESS_V0_VERSION,
     },
     openwhoop_reference::{
+        openwhoop_history_field_references, whoop_generation_references,
         OPENWHOOP_REFERENCE_ATTRIBUTION, OPENWHOOP_REFERENCE_COMMIT,
         OPENWHOOP_REFERENCE_LICENSE_CAVEAT, OPENWHOOP_REFERENCE_REPOSITORY,
-        OPENWHOOP_REFERENCE_SNAPSHOT_URL, openwhoop_history_field_references,
-        whoop_generation_references,
+        OPENWHOOP_REFERENCE_SNAPSHOT_URL,
     },
-    perf_budget::{DEFAULT_PERF_SCALE, PerfBudgetOptions, PerfBudgets, run_perf_budget},
+    perf_budget::{run_perf_budget, PerfBudgetOptions, PerfBudgets, DEFAULT_PERF_SCALE},
     privacy_lint::lint_privacy_path,
     property_tests::{
-        DEFAULT_CASES_PER_GROUP, DEFAULT_PROPERTY_SEED, PropertySuiteOptions, run_property_suite,
+        run_property_suite, PropertySuiteOptions, DEFAULT_CASES_PER_GROUP, DEFAULT_PROPERTY_SEED,
     },
     protocol::{
-        DataPacketBodySummary, DeviceType, I16SeriesSummary, ParsedFrame, ParsedPayload,
-        parse_frame_hex,
+        parse_frame_hex, DataPacketBodySummary, DeviceType, I16SeriesSummary, ParsedFrame,
+        ParsedPayload,
     },
     recovery_rollup::{
-        RecoverySensorDailyRollupOptions, RecoveryUnavailableDailyStatusOptions,
-        RestingHeartRateCaptureValidationOptions, RestingHeartRateDailyRollupOptions,
         rollup_recovery_sensor_daily_for_store, rollup_recovery_unavailable_daily_status_for_store,
         rollup_resting_heart_rate_day_for_store, validate_resting_heart_rate_capture_for_store,
+        RecoverySensorDailyRollupOptions, RecoveryUnavailableDailyStatusOptions,
+        RestingHeartRateCaptureValidationOptions, RestingHeartRateDailyRollupOptions,
     },
     reference::reference_algorithm_definitions,
     sleep_validation::{
-        SleepStageLabelValidationOptions, SleepV1EvidenceFolderOptions,
-        SleepV1ExplanationStabilityOptions, SleepV1ReleaseGateInput,
-        SleepWindowLabelValidationOptions, run_sleep_window_label_validation_for_store,
+        run_sleep_window_label_validation_for_store,
         validate_sleep_v1_evidence_folder_with_options,
         validate_sleep_v1_explanation_and_stability, validate_sleep_v1_release_gates,
-        validate_sleep_v1_stage_labels_for_store,
+        validate_sleep_v1_stage_labels_for_store, SleepStageLabelValidationOptions,
+        SleepV1EvidenceFolderOptions, SleepV1ExplanationStabilityOptions, SleepV1ReleaseGateInput,
+        SleepWindowLabelValidationOptions,
     },
     step_counter::{
-        ActivityUnavailableDailyStatusOptions, StepCounterDailyRollupOptions,
-        StepCounterHourlyRollupOptions, StepCounterIngestOptions,
         rollup_activity_unavailable_daily_status_for_store, rollup_device_step_counter_day,
         rollup_device_step_counter_hour, run_step_counter_ingest_for_store,
+        ActivityUnavailableDailyStatusOptions, StepCounterDailyRollupOptions,
+        StepCounterHourlyRollupOptions, StepCounterIngestOptions,
     },
     step_discovery::{
-        StepCaptureValidationOptions, StepPacketDiscoveryOptions,
         run_step_capture_validation_for_store, run_step_packet_discovery_for_store,
+        StepCaptureValidationOptions, StepPacketDiscoveryOptions,
     },
-    step_motion_estimator::{RawMotionStepEstimateOptions, run_raw_motion_step_estimate_for_store},
-    storage_check::{StorageCheckOptions, check_storage_database},
+    step_motion_estimator::{run_raw_motion_step_estimate_for_store, RawMotionStepEstimateOptions},
+    storage_check::{check_storage_database, StorageCheckOptions},
     store::{
         ActivityIntervalInput, ActivityMetricInput, ActivityMetricRow, ActivitySessionInput,
-        ActivitySessionRow, AlgorithmPreferenceRecord, AlgorithmRunRecord, CURRENT_SCHEMA_VERSION,
-        CalibrationLabelInput, CalibrationLabelRow, CaptureSessionInput, CaptureSessionRow,
-        CommandValidationRecord, DecodedFrameRow, ExternalSleepSessionInput,
-        ExternalSleepSessionRow, ExternalSleepStageInput, ExternalSleepStageRow, GooseStore,
+        ActivitySessionRow, AlgorithmPreferenceRecord, AlgorithmRunRecord, CalibrationLabelInput,
+        CalibrationLabelRow, CaptureSessionInput, CaptureSessionRow, CommandValidationRecord,
+        DecodedFrameRow, ExternalSleepSessionInput, ExternalSleepSessionRow,
+        ExternalSleepStageInput, ExternalSleepStageRow, GooseStore,
         OvernightHistoricalRangePollInput, OvernightRawNotificationInput,
-        OvernightSyncSessionInput, SleepCorrectionLabelInput,
+        OvernightSyncSessionInput, SleepCorrectionLabelInput, CURRENT_SCHEMA_VERSION,
     },
     timeline::{
         observability_timeline_from_rows, packet_timeline_between,
         packet_timeline_from_decoded_frames,
     },
-    ui_coverage::{UiCoverageAuditInput, run_ui_coverage_audit},
+    ui_coverage::{run_ui_coverage_audit, UiCoverageAuditInput},
+    GooseError, GooseResult,
 };
 
 pub const BRIDGE_REQUEST_SCHEMA: &str = "goose.bridge.request.v1";
@@ -266,7 +269,9 @@ struct Gen4Spo2Args {
     window: usize,
 }
 
-fn default_spo2_window() -> usize { 15 }
+fn default_spo2_window() -> usize {
+    15
+}
 
 #[derive(Debug, Clone, Deserialize)]
 struct Gen4PpgPacketInput {
@@ -639,6 +644,31 @@ struct RawMotionStepEstimateArgs {
     tolerance_steps: Option<i64>,
     #[serde(default)]
     label_provenance: Option<serde_json::Value>,
+    #[serde(default)]
+    date_key: Option<String>,
+    #[serde(default)]
+    timezone: Option<String>,
+    #[serde(default)]
+    write_metric: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct K25ImuActivityEstimateArgs {
+    database_path: String,
+    #[serde(default = "default_correlation_start")]
+    start: String,
+    #[serde(default = "default_correlation_end")]
+    end: String,
+    #[serde(default)]
+    sample_rate_hz: Option<f64>,
+    #[serde(default)]
+    peak_threshold_i16: Option<f64>,
+    #[serde(default)]
+    min_peak_spacing_samples: Option<usize>,
+    #[serde(default)]
+    min_activity_variance_i16: Option<f64>,
+    #[serde(default)]
+    min_sample_count: Option<usize>,
     #[serde(default)]
     date_key: Option<String>,
     #[serde(default)]
@@ -2169,6 +2199,10 @@ fn handle_bridge_request_inner(request: BridgeRequest) -> BridgeResponse {
             .and_then(raw_motion_step_estimate_bridge)
             .map(|value| bridge_ok(&request.request_id, value))
             .unwrap_or_else(|error| bridge_error(&request.request_id, "method_error", error)),
+        "metrics.k25_imu_activity_estimate" => request_args::<K25ImuActivityEstimateArgs>(&request)
+            .and_then(k25_imu_activity_estimate_bridge)
+            .map(|value| bridge_ok(&request.request_id, value))
+            .unwrap_or_else(|error| bridge_error(&request.request_id, "method_error", error)),
         "metrics.step_counter_ingest" => request_args::<StepCounterIngestArgs>(&request)
             .and_then(step_counter_ingest_bridge)
             .map(|value| bridge_ok(&request.request_id, value))
@@ -2791,7 +2825,10 @@ fn gen4_decode_frame_batch_bridge(args: Gen4DecodeBatchArgs) -> GooseResult<serd
 }
 
 fn gen4_decode_frames(frames: &[String]) -> GooseResult<Vec<crate::gen4::Gen4Frame>> {
-    frames.iter().map(|hex| crate::gen4::decode_frame_hex(hex)).collect()
+    frames
+        .iter()
+        .map(|hex| crate::gen4::decode_frame_hex(hex))
+        .collect()
 }
 
 fn gen4_extract_streams_bridge(args: Gen4StreamArgs) -> GooseResult<serde_json::Value> {
@@ -2803,8 +2840,11 @@ fn gen4_extract_streams_bridge(args: Gen4StreamArgs) -> GooseResult<serde_json::
 
 fn gen4_extract_historical_streams_bridge(args: Gen4StreamArgs) -> GooseResult<serde_json::Value> {
     let frames = gen4_decode_frames(&args.frames)?;
-    let streams =
-        crate::gen4::extract_historical_streams(&frames, args.device_clock_ref, args.wall_clock_ref);
+    let streams = crate::gen4::extract_historical_streams(
+        &frames,
+        args.device_clock_ref,
+        args.wall_clock_ref,
+    );
     serde_json::to_value(streams)
         .map_err(|error| GooseError::message(format!("cannot serialize gen4 streams: {error}")))
 }
@@ -2822,28 +2862,27 @@ fn gen4_ingest_history_bridge(args: Gen4IngestHistoryArgs) -> GooseResult<serde_
     let mut console_logs: Vec<String> = Vec::new();
     let mut seen_logs: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for frame in &decoded {
-        *frame_type_counts.entry(frame.type_name.clone()).or_insert(0) += 1;
-        if frame.type_name == "CONSOLE_LOGS" && console_logs.len() < 30 {
-            if let Some(serde_json::Value::String(s)) = frame.parsed.get("log") {
+        *frame_type_counts
+            .entry(frame.type_name.clone())
+            .or_insert(0) += 1;
+        if frame.type_name == "CONSOLE_LOGS" && console_logs.len() < 30
+            && let Some(serde_json::Value::String(s)) = frame.parsed.get("log") {
                 let line = s.trim().to_string();
                 if !line.is_empty() && seen_logs.insert(line.clone()) {
                     console_logs.push(line);
                 }
             }
-        }
     }
     // Collect up to 3 sample frames from unrecognised HISTORICAL_DATA versions (e.g. K25/K26)
     // so the Swift side can log raw hex bytes for layout analysis.
     let known_hist_versions: &[i64] = &[5, 7, 9, 12, 24, 25, 26];
     let mut unknown_version_samples: Vec<serde_json::Value> = Vec::new();
     for (frame, hex) in decoded.iter().zip(args.frames.iter()) {
-        if frame.type_name == "HISTORICAL_DATA" && unknown_version_samples.len() < 3 {
-            if let Some(v) = frame.parsed.get("hist_version").and_then(|v| v.as_i64()) {
-                if !known_hist_versions.contains(&v) {
+        if frame.type_name == "HISTORICAL_DATA" && unknown_version_samples.len() < 3
+            && let Some(v) = frame.parsed.get("hist_version").and_then(|v| v.as_i64())
+                && !known_hist_versions.contains(&v) {
                     unknown_version_samples.push(json!({ "version": v, "hex": hex }));
                 }
-            }
-        }
     }
     let records = crate::gen4::decode_history_records(&decoded);
     let k25_records = crate::gen4::decode_k25_records(&decoded);
@@ -2864,7 +2903,8 @@ fn gen4_ingest_history_bridge(args: Gen4IngestHistoryArgs) -> GooseResult<serde_
 
 fn gen4_history_samples_bridge(args: Gen4HistoryQueryArgs) -> GooseResult<serde_json::Value> {
     let store = open_bridge_store(&args.database_path)?;
-    let records = store.gen4_history_records_between(&args.device_id, args.start_ts, args.end_ts)?;
+    let records =
+        store.gen4_history_records_between(&args.device_id, args.start_ts, args.end_ts)?;
     Ok(json!({
         "device_id": args.device_id,
         "count": records.len(),
@@ -2872,7 +2912,9 @@ fn gen4_history_samples_bridge(args: Gen4HistoryQueryArgs) -> GooseResult<serde_
     }))
 }
 
-fn gen4_all_history_samples_bridge(args: Gen4AllHistoryQueryArgs) -> GooseResult<serde_json::Value> {
+fn gen4_all_history_samples_bridge(
+    args: Gen4AllHistoryQueryArgs,
+) -> GooseResult<serde_json::Value> {
     let store = open_bridge_store(&args.database_path)?;
     let records = store.gen4_all_history_records_between(args.start_ts, args.end_ts)?;
     Ok(json!({
@@ -2883,7 +2925,8 @@ fn gen4_all_history_samples_bridge(args: Gen4AllHistoryQueryArgs) -> GooseResult
 
 fn gen4_spo2_series_bridge(args: Gen4Spo2Args) -> GooseResult<serde_json::Value> {
     let store = open_bridge_store(&args.database_path)?;
-    let records = store.gen4_history_records_between(&args.device_id, args.start_ts, args.end_ts)?;
+    let records =
+        store.gen4_history_records_between(&args.device_id, args.start_ts, args.end_ts)?;
     let series = crate::gen4::compute_spo2_series(&records, args.window);
     let clean_estimates = series.iter().filter(|s| !s.motion_rejected).count();
     Ok(json!({
@@ -2959,7 +3002,8 @@ fn gen4_hrv_rmssd_bridge(args: Gen4HrvRmssdArgs) -> GooseResult<serde_json::Valu
 
 fn gen4_strain_bridge(args: Gen4StrainArgs) -> GooseResult<serde_json::Value> {
     let store = open_bridge_store(&args.database_path)?;
-    let hr_samples = store.query_gen4_hr_series_with_ts(&args.device_id, args.start_s, args.end_s)?;
+    let hr_samples =
+        store.query_gen4_hr_series_with_ts(&args.device_id, args.start_s, args.end_s)?;
     let pairs: Vec<(i64, i64)> = hr_samples;
     match crate::gen4::compute_gen4_strain(
         &pairs,
@@ -3024,7 +3068,11 @@ fn gen4_sleep_bridge(args: Gen4SleepArgs) -> GooseResult<serde_json::Value> {
     let records = store.gen4_history_records_between(&args.device_id, from_s, now_s)?;
     let rr_samples = store.query_gen4_ppg_beats_with_ts(&args.device_id, from_ms, now_ms)?;
     let k25_imu = store.query_gen4_k25_imu(&args.device_id, from_s, now_s)?;
-    let imu_source = if k25_imu.len() >= records.len() * 2 { "k25_8hz" } else { "history_1hz" };
+    let imu_source = if k25_imu.len() >= records.len() * 2 {
+        "k25_8hz"
+    } else {
+        "history_1hz"
+    };
     let result = crate::gen4::detect_gen4_sleep(&records, &rr_samples, &k25_imu);
     Ok(json!({
         "sessions": result.sessions,
@@ -3070,7 +3118,8 @@ fn gen4_recovery_bridge(args: Gen4RecoveryArgs) -> GooseResult<serde_json::Value
     } else {
         match store.query_gen4_ppg_max_ts(&args.device_id)? {
             Some(max_ts) => {
-                let rr = store.query_gen4_ppg_beats_rr(&args.device_id, max_ts - 300_000, max_ts)?;
+                let rr =
+                    store.query_gen4_ppg_beats_rr(&args.device_id, max_ts - 300_000, max_ts)?;
                 crate::gen4::compute_hrv_rmssd(&rr).map(|r| r.rmssd_ms)
             }
             None => None,
@@ -3098,9 +3147,14 @@ fn gen4_recovery_bridge(args: Gen4RecoveryArgs) -> GooseResult<serde_json::Value
     // Prior strain: yesterday's HR window using long-term resting HR as anchor
     let rhr_for_strain = current_rhr.or(rhr_baseline).unwrap_or(60.0);
     let yesterday_s = now_s - 86400;
-    let hr_yest = store.query_gen4_hr_series_with_ts(&args.device_id, yesterday_s - 86400, yesterday_s)?;
+    let hr_yest =
+        store.query_gen4_hr_series_with_ts(&args.device_id, yesterday_s - 86400, yesterday_s)?;
     let prior_strain = crate::gen4::compute_gen4_strain(
-        &hr_yest, rhr_for_strain, 190.0, yesterday_s - 86400, yesterday_s,
+        &hr_yest,
+        rhr_for_strain,
+        190.0,
+        yesterday_s - 86400,
+        yesterday_s,
     )
     .map(|r| r.score_0_to_21)
     .unwrap_or(0.0);
@@ -3108,8 +3162,14 @@ fn gen4_recovery_bridge(args: Gen4RecoveryArgs) -> GooseResult<serde_json::Value
     match (current_rhr, current_hrv, hrv_baseline, rhr_baseline) {
         (Some(rhr_cur), Some(hrv_cur), Some(hrv_bl), Some(rhr_bl)) => {
             match crate::gen4::compute_gen4_recovery(
-                hrv_cur, hrv_bl, rhr_cur, rhr_bl,
-                sleep_eff, sleep_tst, skin_temp_delta_c, prior_strain,
+                hrv_cur,
+                hrv_bl,
+                rhr_cur,
+                rhr_bl,
+                sleep_eff,
+                sleep_tst,
+                skin_temp_delta_c,
+                prior_strain,
             ) {
                 Some(r) => Ok(json!({
                     "found": true,
@@ -3137,10 +3197,18 @@ fn gen4_recovery_bridge(args: Gen4RecoveryArgs) -> GooseResult<serde_json::Value
         }
         _ => {
             let mut missing = Vec::new();
-            if current_rhr.is_none() { missing.push("resting_hr"); }
-            if current_hrv.is_none() { missing.push("hrv"); }
-            if hrv_baseline.is_none() { missing.push("hrv_baseline"); }
-            if rhr_baseline.is_none() { missing.push("rhr_baseline"); }
+            if current_rhr.is_none() {
+                missing.push("resting_hr");
+            }
+            if current_hrv.is_none() {
+                missing.push("hrv");
+            }
+            if hrv_baseline.is_none() {
+                missing.push("hrv_baseline");
+            }
+            if rhr_baseline.is_none() {
+                missing.push("rhr_baseline");
+            }
             Ok(json!({ "found": false, "reason": "insufficient_data", "missing": missing }))
         }
     }
@@ -3152,19 +3220,31 @@ fn compact_gen4_battery(data_hex: &str) -> (Option<f64>, Option<i64>, Option<boo
     };
     let pct = if bytes.len() >= 3 {
         let raw = u16::from_le_bytes([bytes[1], bytes[2]]) as f64;
-        if raw <= 1100.0 { Some(raw / 10.0) } else { None }
+        if raw <= 1100.0 {
+            Some(raw / 10.0)
+        } else {
+            None
+        }
     } else {
         None
     };
     let mv = if bytes.len() >= 7 {
         let v = u16::from_le_bytes([bytes[5], bytes[6]]) as i64;
-        if (3000..=4300).contains(&v) { Some(v) } else { None }
+        if (3000..=4300).contains(&v) {
+            Some(v)
+        } else {
+            None
+        }
     } else {
         None
     };
     let charging = if bytes.len() >= 11 {
         let ch = bytes[10];
-        if ch <= 1 { Some(ch != 0) } else { None }
+        if ch <= 1 {
+            Some(ch != 0)
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -3724,15 +3804,14 @@ fn matching_calibration_algorithm_run<'a>(
     provenance: &serde_json::Value,
     options: &CalibrationOptions,
 ) -> Option<&'a AlgorithmRunRecord> {
-    if let Some(run_id) = provenance_algorithm_run_id(provenance) {
-        if let Some(run) = algorithm_runs.iter().find(|run| {
+    if let Some(run_id) = provenance_algorithm_run_id(provenance)
+        && let Some(run) = algorithm_runs.iter().find(|run| {
             run.run_id.as_str() == run_id
                 && run.algorithm_id.as_str() == options.algorithm_id.as_str()
                 && run.version.as_str() == options.algorithm_version.as_str()
         }) {
             return Some(run);
         }
-    }
 
     algorithm_runs.iter().find(|run| {
         run.algorithm_id.as_str() == options.algorithm_id.as_str()
@@ -4264,6 +4343,34 @@ fn raw_motion_step_estimate_bridge(
     serde_json::to_value(report).map_err(|error| {
         GooseError::message(format!(
             "cannot serialize raw-motion step estimate report: {error}"
+        ))
+    })
+}
+
+fn k25_imu_activity_estimate_bridge(
+    args: K25ImuActivityEstimateArgs,
+) -> GooseResult<serde_json::Value> {
+    let store = open_bridge_store(&args.database_path)?;
+    let report = run_k25_imu_activity_estimate_for_store(
+        &store,
+        &args.database_path,
+        &args.start,
+        &args.end,
+        K25ImuActivityEstimateOptions {
+            sample_rate_hz: args.sample_rate_hz.unwrap_or(8.0),
+            peak_threshold_i16: args.peak_threshold_i16.unwrap_or(0.0),
+            min_peak_spacing_samples: args.min_peak_spacing_samples.unwrap_or(3),
+            min_activity_variance_i16: args.min_activity_variance_i16.unwrap_or(35.0),
+            min_sample_count: args.min_sample_count.unwrap_or(480),
+            date_key: args.date_key,
+            timezone: args.timezone,
+            write_metric: args.write_metric,
+            ..K25ImuActivityEstimateOptions::default()
+        },
+    )?;
+    serde_json::to_value(report).map_err(|error| {
+        GooseError::message(format!(
+            "cannot serialize K25 IMU activity estimate report: {error}"
         ))
     })
 }
@@ -6195,7 +6302,7 @@ fn activity_list_sessions_with_metrics_bridge(
     for metric in metrics {
         metrics_by_session
             .entry(metric.activity_session_id.clone())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(metric);
     }
 
@@ -7399,7 +7506,7 @@ fn capture_arrival_plan_next_focus(
         arrival_action_is_local_health_validation,
         arrival_action_is_metric_input_work,
     ] {
-        if let Some(action) = actions.iter().find(|action| priority(action)).cloned() {
+        if let Some(action) = actions.iter().find(priority).cloned() {
             return Some(action);
         }
     }

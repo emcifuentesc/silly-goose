@@ -544,14 +544,12 @@ extension HealthDataStore {
     }
     return "\(Int((double * 100).rounded()))%"
   }
-
   nonisolated static func minutesText(_ minutes: Double) -> String {
     let rounded = Int(minutes.rounded())
     let hours = rounded / 60
     let mins = rounded % 60
     return hours > 0 ? "\(hours)h \(mins)m" : "\(mins)m"
   }
-
   static func bridgeDate(_ value: Any?) -> Date? {
     if let date = value as? Date {
       return date
@@ -578,24 +576,20 @@ extension HealthDataStore {
     formatter.formatOptions = [.withInternetDateTime]
     return formatter.date(from: text)
   }
-
   static func timeLabel(_ date: Date) -> String {
     let formatter = DateFormatter()
     formatter.timeStyle = .short
     formatter.dateStyle = .none
     return formatter.string(from: date)
   }
-
   static func dateLabel(_ date: Date) -> String {
     let formatter = DateFormatter()
     formatter.dateFormat = "dd/MM/yyyy"
     return formatter.string(from: date)
   }
-
   static func algorithmRows(from value: Any) -> [[String: Any]] {
     value as? [[String: Any]] ?? []
   }
-
   static func preferenceRows(from value: Any) -> [String: String] {
     guard let rows = value as? [[String: Any]] else {
       return [:]
@@ -610,7 +604,6 @@ extension HealthDataStore {
       }
     )
   }
-
   static func emptyTrend(from trend: HealthTrendModel, packetCount: Int) -> HealthTrendModel {
     let hasPackets = packetCount > 0
     return HealthTrendModel(
@@ -625,7 +618,6 @@ extension HealthDataStore {
       points: []
     )
   }
-
   static func dailyTrend(
     id: String,
     title: String,
@@ -657,7 +649,6 @@ extension HealthDataStore {
       points: points
     )
   }
-
   static func restingHeartRateDailyRecoveryTrend(
     base trend: HealthTrendModel,
     metrics: [[String: Any]]
@@ -672,12 +663,10 @@ extension HealthDataStore {
       fractionDigits: 0,
       resources: trend.resources
     )
-
     let values = rows.compactMap { doubleValue($0["resting_hr_bpm"]) }
     guard daily.hasData, !values.isEmpty else {
       return daily
     }
-
     let latestMetric = rows.last ?? [:]
     let latest = values.last ?? 0
     let average = values.reduce(0, +) / Double(values.count)
@@ -687,18 +676,21 @@ extension HealthDataStore {
     let deltaText = signedNumberText(delta, fractionDigits: 0) ?? "0"
     let confidence = numberText(latestMetric["confidence"], fractionDigits: 2) ?? "0"
     let sourceKind = latestMetric["source_kind"] as? String ?? "device_sensor"
-
+    let analysis = """
+      Stored packet-derived daily resting HR from daily_recovery_metrics.
+      Latest \(latestText) bpm | avg \(averageText) bpm | \(deltaText) bpm vs avg |
+      source \(sourceKind) | confidence \(confidence).
+      """
     return HealthTrendModel(
       id: daily.id,
       title: daily.title,
       rangeLabel: daily.rangeLabel,
       summary: "\(daily.points.count)d stored recovery trend | \(daily.rangeLabel)",
-      analysis: "Stored packet-derived daily resting HR from daily_recovery_metrics. Latest \(latestText) bpm | avg \(averageText) bpm | \(deltaText) bpm vs avg | source \(sourceKind) | confidence \(confidence).",
+      analysis: analysis,
       resources: daily.resources,
       points: daily.points
     )
   }
-
   static func restingHeartRateRollupTrend(
     base trend: HealthTrendModel,
     report: [String: Any]
@@ -719,7 +711,6 @@ extension HealthDataStore {
       fractionDigits: 0,
       resources: trend.resources
     )
-
     let sevenDay = numberText(report["rolling_7_day_average_bpm"], fractionDigits: 0)
     let sevenDayDelta = signedNumberText(report["selected_vs_7_day_average_bpm"], fractionDigits: 0)
     let thirtyDay = numberText(report["rolling_30_day_average_bpm"], fractionDigits: 0)
@@ -733,7 +724,6 @@ extension HealthDataStore {
     let analysis = analysisParts.isEmpty
       ? "Packet-derived daily resting HR from locally captured WHOOP heart-rate samples."
       : "Packet-derived daily resting HR from locally captured WHOOP heart-rate samples. \(analysisParts.joined(separator: " | "))."
-
     return HealthTrendModel(
       id: daily.id,
       title: daily.title,
@@ -744,7 +734,6 @@ extension HealthDataStore {
       points: daily.points
     )
   }
-
   static func energyRollupTrend(
     base trend: HealthTrendModel,
     report: [String: Any],
@@ -764,23 +753,26 @@ extension HealthDataStore {
       fractionDigits: 0,
       resources: trend.resources
     )
-
     let active = numberText(report["active_kcal"], fractionDigits: 0) ?? "--"
     let resting = numberText(report["resting_kcal"], fractionDigits: 0) ?? "--"
     let total = numberText(report["total_kcal"], fractionDigits: 0) ?? "--"
     let confidence = numberText(report["confidence"], fractionDigits: 2) ?? "0"
     let covered = numberText(report["covered_minutes"], fractionDigits: 0) ?? "0"
+    let analysis = """
+      Local WHOOP-derived calorie estimate from packet heart-rate and motion features.
+      Active \(active) kcal | resting \(resting) kcal | total \(total) kcal |
+      \(covered) covered minutes | confidence \(confidence).
+      """
     return HealthTrendModel(
       id: daily.id,
       title: daily.title,
       rangeLabel: daily.rangeLabel,
       summary: daily.hasData ? "\(daily.points.count)d local estimate | \(daily.rangeLabel)" : daily.summary,
-      analysis: "Local WHOOP-derived calorie estimate from packet heart-rate and motion features. Active \(active) kcal | resting \(resting) kcal | total \(total) kcal | \(covered) covered minutes | confidence \(confidence).",
+      analysis: analysis,
       resources: daily.resources,
       points: daily.points
     )
   }
-
   static func energyMetricTrend(
     base trend: HealthTrendModel,
     metrics: [[String: Any]],
@@ -801,7 +793,6 @@ extension HealthDataStore {
     guard daily.hasData, !values.isEmpty else {
       return daily
     }
-
     let latest = doubleValue(latestMetric[valueKey]) ?? values.last ?? 0
     let average = values.reduce(0, +) / Double(values.count)
     let delta = latest - average
@@ -811,18 +802,21 @@ extension HealthDataStore {
     let confidence = numberText(latestMetric["confidence"], fractionDigits: 2) ?? "0"
     let sourceKind = latestMetric["source_kind"] as? String ?? "unknown"
     let label = energyMetricLabel(valueKey)
-
+    let analysis = """
+      Stored daily WHOOP-derived \(label) from daily_activity_metrics.
+      Latest \(latestText) kcal | avg \(averageText) kcal | \(deltaText) kcal vs avg |
+      source \(sourceKind) | confidence \(confidence).
+      """
     return HealthTrendModel(
       id: daily.id,
       title: daily.title,
       rangeLabel: daily.rangeLabel,
       summary: "\(daily.points.count)d stored activity trend | \(daily.rangeLabel)",
-      analysis: "Stored daily WHOOP-derived \(label) from daily_activity_metrics. Latest \(latestText) kcal | avg \(averageText) kcal | \(deltaText) kcal vs avg | source \(sourceKind) | confidence \(confidence).",
+      analysis: analysis,
       resources: daily.resources,
       points: daily.points
     )
   }
-
   static func energyMetricLabel(_ valueKey: String) -> String {
     switch valueKey {
     case "active_kcal":
@@ -835,7 +829,6 @@ extension HealthDataStore {
       return valueKey
     }
   }
-
   static func stepMetricTrend(
     base trend: HealthTrendModel,
     metrics: [[String: Any]],
@@ -851,7 +844,6 @@ extension HealthDataStore {
       fractionDigits: 0,
       resources: trend.resources
     )
-
     let steps = numberText(metric["steps"], fractionDigits: 0) ?? "--"
     let sourceKind = metric["source_kind"] as? String ?? "unknown"
     let confidence = numberText(metric["confidence"], fractionDigits: 2) ?? "0"
@@ -866,7 +858,6 @@ extension HealthDataStore {
     default:
       sourceText = sourceKind
     }
-
     return HealthTrendModel(
       id: daily.id,
       title: daily.title,
@@ -877,18 +868,15 @@ extension HealthDataStore {
       points: daily.points
     )
   }
-
   static func latestDailyDateText(in report: [String: Any]) -> String? {
     array(report["daily"]).last?["date"] as? String
   }
-
   static func rollupFreshnessText(in report: [String: Any]) -> String? {
     if let dateKey = report["date_key"] as? String {
       return dateKey
     }
     return map(report, "feature_report").flatMap { latestDailyDateText(in: $0) }
   }
-
   static func rangeText(values: [Double], unit: String, fractionDigits: Int) -> String? {
     guard let min = values.min(), let max = values.max() else {
       return nil
@@ -897,7 +885,6 @@ extension HealthDataStore {
     let maxText = numberText(max, fractionDigits: fractionDigits) ?? "\(max)"
     return "\(minText) - \(maxText) \(unit)"
   }
-
   static func stressTrendModel(
     base trend: HealthTrendModel,
     summary: StressAlgorithmSummary,
@@ -924,7 +911,6 @@ extension HealthDataStore {
       points: trendPoints
     )
   }
-
   static func energyBankTrendModel(
     base trend: HealthTrendModel,
     summary: EnergyBankAlgorithmSummary
@@ -948,7 +934,6 @@ extension HealthDataStore {
       points: trendPoints
     )
   }
-
   static func cardioLoadTrendModel(
     base trend: HealthTrendModel,
     summary: CardioLoadAlgorithmSummary
@@ -970,53 +955,6 @@ extension HealthDataStore {
         : "Cardio Load is computed from local activity sessions, duration, and heart-rate intensity.",
       resources: trend.resources,
       points: trendPoints
-    )
-  }
-
-  static func trend(_ id: String, title: String, values: [Double], range: String, summary: String) -> HealthTrendModel {
-    HealthTrendModel(
-      id: id,
-      title: title,
-      rangeLabel: range,
-      summary: summary,
-      analysis: values.isEmpty ? "No local data has been captured for this trend yet." : "Sample trend shows a stable baseline with one recent movement worth reviewing.",
-      resources: ["The Basics", "How \(title) is calculated"],
-      points: values.enumerated().map { index, value in
-        HealthTrendPoint(label: "D\(index + 1)", value: value)
-      }
-    )
-  }
-
-  static func snapshot(
-    id: String,
-    route: HealthRoute,
-    group: HealthMetricGroup,
-    title: String,
-    value: String,
-    unit: String,
-    status: String,
-    freshness: String,
-    provenance: String,
-    source: HealthDataSource,
-    systemImage: String,
-    tint: Color,
-    trendValues: [Double],
-    range: String
-  ) -> HealthMetricSnapshot {
-    HealthMetricSnapshot(
-      id: id,
-      route: route,
-      group: group,
-      title: title,
-      value: value,
-      unit: unit,
-      status: status,
-      freshness: freshness,
-      provenance: provenance,
-      source: source,
-      systemImage: systemImage,
-      tint: tint,
-      trend: trend(id, title: title, values: trendValues, range: range, summary: "\(status) | \(range)")
     )
   }
 

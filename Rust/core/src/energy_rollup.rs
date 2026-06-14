@@ -1,23 +1,23 @@
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use crate::{
-    GooseError, GooseResult,
     capture_correlation::DEFAULT_MIN_OWNED_CAPTURES_PER_SUMMARY,
     metric_features::{
-        MetricWindowFeatureOptions, MetricWindowFeatureReport,
-        run_metric_window_feature_report_for_store,
+        run_metric_window_feature_report_for_store, MetricWindowFeatureOptions,
+        MetricWindowFeatureReport,
     },
     store::{
         DailyActivityMetricInput, DailyActivityMetricRow, GooseStore, HourlyActivityMetricInput,
         HourlyActivityMetricRow, MetricProvenanceInput,
     },
     validation_labels::{
-        OFFICIAL_WHOOP_LABEL_POLICY, official_label_policy_issue_action,
-        official_label_policy_issues,
+        official_label_policy_issue_action, official_label_policy_issues,
+        OFFICIAL_WHOOP_LABEL_POLICY,
     },
+    GooseError, GooseResult,
 };
 
 pub const ENERGY_DAILY_ROLLUP_REPORT_SCHEMA: &str = "goose.energy-daily-rollup-report.v1";
@@ -1459,23 +1459,20 @@ fn validate_options(options: &EnergyDailyRollupOptions<'_>) -> GooseResult<()> {
     if options.timezone.trim().is_empty() {
         return Err(GooseError::message("timezone is required"));
     }
-    if let Some(weight) = options.profile_weight_kg {
-        if !weight.is_finite() || !(25.0..=300.0).contains(&weight) {
+    if let Some(weight) = options.profile_weight_kg
+        && (!weight.is_finite() || !(25.0..=300.0).contains(&weight)) {
             return Err(GooseError::message(
                 "profile_weight_kg must be between 25 and 300",
             ));
         }
-    }
-    if let Some(resting_hr_bpm) = options.resting_hr_bpm {
-        if !resting_hr_bpm.is_finite() || resting_hr_bpm <= 0.0 {
+    if let Some(resting_hr_bpm) = options.resting_hr_bpm
+        && (!resting_hr_bpm.is_finite() || resting_hr_bpm <= 0.0) {
             return Err(GooseError::message("resting_hr_bpm must be positive"));
         }
-    }
-    if let Some(max_hr_bpm) = options.max_hr_bpm {
-        if !max_hr_bpm.is_finite() || max_hr_bpm <= 0.0 {
+    if let Some(max_hr_bpm) = options.max_hr_bpm
+        && (!max_hr_bpm.is_finite() || max_hr_bpm <= 0.0) {
             return Err(GooseError::message("max_hr_bpm must be positive"));
         }
-    }
     if options.min_heart_rate_samples == 0 {
         return Err(GooseError::message(
             "min_heart_rate_samples must be at least 1",
@@ -1491,23 +1488,20 @@ fn validate_hourly_options(options: &EnergyHourlyRollupOptions<'_>) -> GooseResu
     if options.timezone.trim().is_empty() {
         return Err(GooseError::message("timezone is required"));
     }
-    if let Some(weight) = options.profile_weight_kg {
-        if !weight.is_finite() || !(25.0..=300.0).contains(&weight) {
+    if let Some(weight) = options.profile_weight_kg
+        && (!weight.is_finite() || !(25.0..=300.0).contains(&weight)) {
             return Err(GooseError::message(
                 "profile_weight_kg must be between 25 and 300",
             ));
         }
-    }
-    if let Some(resting_hr_bpm) = options.resting_hr_bpm {
-        if !resting_hr_bpm.is_finite() || resting_hr_bpm <= 0.0 {
+    if let Some(resting_hr_bpm) = options.resting_hr_bpm
+        && (!resting_hr_bpm.is_finite() || resting_hr_bpm <= 0.0) {
             return Err(GooseError::message("resting_hr_bpm must be positive"));
         }
-    }
-    if let Some(max_hr_bpm) = options.max_hr_bpm {
-        if !max_hr_bpm.is_finite() || max_hr_bpm <= 0.0 {
+    if let Some(max_hr_bpm) = options.max_hr_bpm
+        && (!max_hr_bpm.is_finite() || max_hr_bpm <= 0.0) {
             return Err(GooseError::message("max_hr_bpm must be positive"));
         }
-    }
     if options.min_heart_rate_samples == 0 {
         return Err(GooseError::message(
             "min_heart_rate_samples must be at least 1",
@@ -1543,11 +1537,10 @@ fn validate_energy_validation_options(
             options.official_whoop_total_kcal,
         ),
     ] {
-        if let Some(value) = value {
-            if !value.is_finite() || value < 0.0 {
+        if let Some(value) = value
+            && (!value.is_finite() || value < 0.0) {
                 return Err(GooseError::message(format!("{name} must be nonnegative")));
             }
-        }
     }
     Ok(())
 }

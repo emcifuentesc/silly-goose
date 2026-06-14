@@ -96,12 +96,7 @@ struct RecoveryV2OverviewPage: View {
 
               SleepV2SectionHeader(title: "Timeline", palette: palette)
 
-              RecoveryV2EmptyStateCard(
-                palette: palette,
-                systemImage: "timeline.selection",
-                title: "No recovery timeline",
-                value: "0 events"
-              )
+              RecoveryV2TimelineSection(palette: palette, items: store.recoveryTimelineItems)
 
               SleepV2SectionHeader(title: "Insights", palette: palette)
 
@@ -114,10 +109,19 @@ struct RecoveryV2OverviewPage: View {
 
               SleepV2SectionHeader(title: "Trends", palette: palette)
 
-              VStack(spacing: 14) {
-                ForEach(recoveryTrendRows) { snapshot in
-                  RecoveryV2TrendCard(palette: palette, snapshot: snapshot) {
-                    selectedTrend = snapshot
+              if recoveryTrendRows.isEmpty {
+                RecoveryV2EmptyStateCard(
+                  palette: palette,
+                  systemImage: "chart.line.uptrend.xyaxis",
+                  title: "No recovery trends",
+                  value: recoveryTrendEmptyMessage
+                )
+              } else {
+                VStack(spacing: 14) {
+                  ForEach(recoveryTrendRows) { snapshot in
+                    RecoveryV2TrendCard(palette: palette, snapshot: snapshot) {
+                      selectedTrend = snapshot
+                    }
                   }
                 }
               }
@@ -176,7 +180,21 @@ struct RecoveryV2OverviewPage: View {
   }
 
   private var recoveryTrendRows: [HealthMetricSnapshot] {
-    store.recoveryTrendOverviewRows()
+    guard Calendar.current.isDate(selectedDate, inSameDayAs: Date()) else {
+      return []
+    }
+    return store.trendRows(for: .recovery)
+  }
+
+  private var recoveryTrendEmptyMessage: String {
+    if packetScoreStatus.localizedCaseInsensitiveContains("blocked") {
+      return "Recovery score run is blocked: \(packetScoreStatus)"
+    }
+    return "Run packet scores after trusted sleep, HRV, resting HR, and vital evidence are available."
+  }
+
+  private var packetScoreStatus: String {
+    store.packetScoreStatus
   }
 
   private var dateLabel: String {
@@ -529,11 +547,11 @@ struct StressV2ScenicBackground: View {
 
       Canvas { context, size in
         for index in 0..<26 {
-          let x = CGFloat((index * 71 + 19) % max(1, Int(size.width)))
-          let y = CGFloat(38 + ((index * 47) % max(1, Int(size.height * 0.38))))
+          let pointX = CGFloat((index * 71 + 19) % max(1, Int(size.width)))
+          let pointY = CGFloat(38 + ((index * 47) % max(1, Int(size.height * 0.38))))
           let radius = index % 8 == 0 ? CGFloat(1.1) : CGFloat(0.65)
           context.fill(
-            Path(ellipseIn: CGRect(x: x, y: y, width: radius * 2, height: radius * 2)),
+            Path(ellipseIn: CGRect(x: pointX, y: pointY, width: radius * 2, height: radius * 2)),
             with: .color(.white.opacity(palette.light ? 0.16 : 0.20))
           )
         }
@@ -661,10 +679,10 @@ struct StressV2TimelineChart: View {
           }
 
           ForEach([25, 50, 75, 100], id: \.self) { value in
-            let y = yPosition(value: Double(value), height: proxy.size.height)
+            let lineY = yPosition(value: Double(value), height: proxy.size.height)
             Path { path in
-              path.move(to: CGPoint(x: 0, y: y))
-              path.addLine(to: CGPoint(x: proxy.size.width - 34, y: y))
+              path.move(to: CGPoint(x: 0, y: lineY))
+              path.addLine(to: CGPoint(x: proxy.size.width - 34, y: lineY))
             }
             .stroke(palette.separator.opacity(0.64), style: StrokeStyle(lineWidth: 1, dash: [4, 5]))
           }
@@ -842,5 +860,73 @@ struct StressV2BreakdownRow: View {
       RoundedRectangle(cornerRadius: 16, style: .continuous)
         .stroke(palette.separator.opacity(0.70), lineWidth: 1)
     )
+  }
+}
+
+struct RecoveryV2TimelineSection: View {
+  let palette: SleepV2Palette
+  let items: [RecoveryTimelineItem]
+
+  var body: some View {
+    if items.isEmpty {
+      RecoveryV2EmptyStateCard(
+        palette: palette,
+        systemImage: "timeline.selection",
+        title: "No recovery timeline",
+        value: "Run packet scores after trusted sleep, HRV, resting HR, and vital evidence are available."
+      )
+    } else {
+      VStack(spacing: 10) {
+        ForEach(items) { item in
+          RecoveryV2TimelineItemCard(palette: palette, item: item)
+        }
+      }
+    }
+  }
+}
+
+struct RecoveryV2TimelineItemCard: View {
+  let palette: SleepV2Palette
+  let item: RecoveryTimelineItem
+
+  var body: some View {
+    SleepV2Panel(palette: palette, padding: 14, radius: 18) {
+      HStack(alignment: .top, spacing: 12) {
+        Image(systemName: item.systemImage)
+          .font(.headline.weight(.semibold))
+          .foregroundStyle(palette.accent)
+          .frame(width: 38, height: 38)
+          .background(palette.accent.opacity(0.10), in: Circle())
+
+        VStack(alignment: .leading, spacing: 4) {
+          Text(item.title)
+            .font(.headline.weight(.semibold))
+            .foregroundStyle(palette.text)
+            .lineLimit(1)
+          Text(item.value)
+            .font(.title3.weight(.semibold))
+            .fontDesign(.rounded)
+            .foregroundStyle(palette.text)
+            .lineLimit(2)
+            .minimumScaleFactor(0.70)
+          HStack(spacing: 6) {
+            let icon = item.source.kind == .unavailable ? "exclamationmark.triangle.fill" : "checkmark.seal.fill"
+            Image(systemName: icon)
+              .font(.caption.weight(.semibold))
+            Text(item.status)
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(item.source.kind == .unavailable ? Color.orange : palette.secondaryText)
+          }
+          Text(item.detail)
+            .font(.caption)
+            .foregroundStyle(palette.secondaryText)
+            .lineLimit(2)
+            .minimumScaleFactor(0.78)
+        }
+
+        Spacer(minLength: 8)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
   }
 }

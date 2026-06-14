@@ -144,7 +144,15 @@ extension HealthDataStore {
           source: .unavailable("preview missing data"),
           systemImage: snapshot.systemImage,
           tint: snapshot.tint,
-          trend: HealthTrendModel(id: snapshot.trend.id, title: snapshot.trend.title, rangeLabel: "No data", summary: "No trend data", analysis: "No local data has been captured for this trend yet.", resources: snapshot.trend.resources, points: [])
+          trend: HealthTrendModel(
+            id: snapshot.trend.id,
+            title: snapshot.trend.title,
+            rangeLabel: "No data",
+            summary: "No trend data",
+            analysis: "No local data has been captured for this trend yet.",
+            resources: snapshot.trend.resources,
+            points: []
+          )
         )
       }
     }
@@ -237,7 +245,15 @@ extension HealthDataStore {
       source: .unavailable("preview missing data"),
       systemImage: snapshot.systemImage,
       tint: snapshot.tint,
-      trend: HealthTrendModel(id: snapshot.trend.id, title: snapshot.trend.title, rangeLabel: "No data", summary: "No trend data", analysis: "No local data has been captured for this trend yet.", resources: snapshot.trend.resources, points: [])
+      trend: HealthTrendModel(
+        id: snapshot.trend.id,
+        title: snapshot.trend.title,
+        rangeLabel: "No data",
+        summary: "No trend data",
+        analysis: "No local data has been captured for this trend yet.",
+        resources: snapshot.trend.resources,
+        points: []
+      )
     )
   }
 
@@ -417,15 +433,205 @@ extension HealthDataStore {
   }
 
   func recoveryScoreTrend(base trend: HealthTrendModel, currentScore: Double) -> HealthTrendModel {
-    HealthTrendModel(
+    let dailyRows = Self.array(packetScoreReports["recovery"]?["daily"])
+    let trendModel = Self.dailyTrend(
       id: trend.id,
       title: trend.title,
-      rangeLabel: "\(Self.numberText(currentScore, fractionDigits: 0) ?? "0")%",
-      summary: "Latest packet-derived recovery score",
-      analysis: "Packet-derived recovery score from the local bridge.",
-      resources: trend.resources,
-      points: []
+      rows: dailyRows,
+      valueKey: "score_0_to_100",
+      unit: "%",
+      fractionDigits: 0,
+      resources: trend.resources
     )
+    return HealthTrendModel(
+      id: trend.id,
+      title: trend.title,
+      rangeLabel: trendModel.hasData ? trendModel.rangeLabel : "\(Self.numberText(currentScore, fractionDigits: 0) ?? "0")%",
+      summary: trendModel.hasData ? trendModel.summary : "Latest packet-derived recovery score",
+      analysis: trendModel.hasData
+        ? "Packet-derived recovery score and daily trend from the local bridge."
+        : "Packet-derived recovery score from the local bridge.",
+      resources: trend.resources,
+      points: trendModel.points
+    )
+  }
+
+  var recoveryTimelineItems: [RecoveryTimelineItem] {
+    guard let report = packetScoreReports["recovery"] else {
+      return []
+    }
+    if Self.boolValue(report["pass"]) != true {
+      let issues = Self.stringArray(report["issues"])
+      return [
+        RecoveryTimelineItem(
+          id: "recovery-run-blocked",
+          title: "Recovery score run",
+          value: "Blocked",
+          status: "Packet score run blocked",
+          source: .unavailable(Self.shortErrorDescription(report)),
+          systemImage: "exclamationmark.triangle.fill",
+          detail: issues.isEmpty ? "Recovery score inputs are incomplete." : issues.joined(separator: " · ")
+        )
+      ]
+    }
+
+    var items: [RecoveryTimelineItem] = []
+    let output = Self.map(report, "score_result", "output")
+    let input = Self.map(report, "recovery_input")
+
+    if let score = Self.doubleValue(output?["score_0_to_100"]) {
+      items.append(
+        RecoveryTimelineItem(
+          id: "recovery-score",
+          title: "Recovery score",
+          value: "\(Self.numberText(score, fractionDigits: 0) ?? "--")%",
+          status: Self.recoveryQualityLabel(score: score),
+          source: .bridge("metrics.recovery_score_from_features"),
+          systemImage: "battery.100percent",
+          detail: "Scored from HRV, resting HR, sleep, vitals, and prior strain inputs"
+        )
+      )
+    }
+
+    if let sleep = primarySleepDetail {
+      items.append(
+        RecoveryTimelineItem(
+          id: "primary-sleep-window",
+          title: "Primary sleep window",
+          value: "\(sleep.startLabel)–\(sleep.endLabel)",
+          status: "\(sleep.durationText) · \(sleep.scoreDisplayText)",
+          source: sleep.source,
+          systemImage: "bed.double",
+          detail: "\(sleep.dateLabel) · \(sleep.timeInBedText) time in bed"
+        )
+      )
+    } else if let start = Self.bridgeDate(input?["start_time"]), let end = Self.bridgeDate(input?["end_time"]) {
+      items.append(
+        RecoveryTimelineItem(
+          id: "recovery-sleep-window",
+          title: "Sleep window used by recovery",
+          value: "\(Self.timeLabel(start))–\(Self.timeLabel(end))",
+          status: "\(Self.numberText(Self.doubleValue(input?["sleep_score_0_to_100"]), fractionDigits: 0) ?? "no score")%",
+          source: .bridge("metrics.recovery_score_from_features"),
+          systemImage: "bed.double",
+          detail: "Recovery input window"
+        )
+      )
+    }
+
+    if let hrv = Self.doubleValue(input?["hrv_rmssd_ms"]),
+       let baseline = Self.doubleValue(input?["hrv_baseline_rmssd_ms"]) {
+      items.append(
+        RecoveryTimelineItem(
+          id: "recovery-hrv-input",
+          title: "HRV input",
+          value: "\(Self.numberText(hrv, fractionDigits: 0) ?? "--") ms",
+          status: "baseline \(Self.numberText(baseline, fractionDigits: 0) ?? "--") ms",
+          source: .bridgeDeviceSensor("metrics.hrv_features"),
+          systemImage: "waveform.path.ecg",
+          detail: "RMSSD and baseline used by recovery score"
+        )
+      )
+    }
+
+    if let rhr = Self.doubleValue(input?["resting_hr_bpm"]),
+       let baseline = Self.doubleValue(input?["resting_hr_baseline_bpm"]) {
+      items.append(
+        RecoveryTimelineItem(
+          id: "recovery-resting-hr-input",
+          title: "Resting HR input",
+          value: "\(Self.numberText(rhr, fractionDigits: 0) ?? "--") bpm",
+          status: "baseline \(Self.numberText(baseline, fractionDigits: 0) ?? "--") bpm",
+          source: .bridgeDeviceSensor("metrics.resting_hr_features"),
+          systemImage: "heart.fill",
+          detail: "Resting heart rate and baseline used by recovery score"
+        )
+      )
+    }
+
+    if let vitals = Self.map(report, "provided_vitals"), Self.recoveryProvidedVitalsAreTrusted(vitals) {
+      var parts: [String] = []
+      if let rr = Self.doubleValue(vitals["respiratory_rate_rpm"]) {
+        parts.append("RR \(Self.numberText(rr, fractionDigits: 1) ?? "--") rpm")
+      }
+      if let baseline = Self.doubleValue(vitals["respiratory_rate_baseline_rpm"]) {
+        parts.append("baseline \(Self.numberText(baseline, fractionDigits: 1) ?? "--") rpm")
+      }
+      if let temp = Self.doubleValue(vitals["skin_temp_delta_c"]) {
+        parts.append("temp Δ \(Self.signedNumberText(temp, fractionDigits: 1) ?? "--") C")
+      }
+      items.append(
+        RecoveryTimelineItem(
+          id: "recovery-provided-vitals",
+          title: "Packet vitals",
+          value: parts.isEmpty ? "Available" : parts.joined(separator: " · "),
+          status: "Packet-derived",
+          source: Self.recoveryProvidedVitalsSource(vitals),
+          systemImage: "lungs.fill",
+          detail: "Trusted respiratory-rate and skin-temperature inputs"
+        )
+      )
+    } else if Self.map(report, "provided_vitals") != nil {
+      items.append(
+        RecoveryTimelineItem(
+          id: "recovery-vitals-unverified",
+          title: "Packet vitals",
+          value: "Unverified",
+          status: "Semantics pending",
+          source: .unavailable("provided vitals are not trusted for recovery score input"),
+          systemImage: "drop.fill",
+          detail: "Recovery score did not consume these vitals"
+        )
+      )
+    }
+
+    if let strain = Self.doubleValue(input?["prior_strain_0_to_21"]) {
+      items.append(
+        RecoveryTimelineItem(
+          id: "recovery-prior-strain",
+          title: "Prior strain",
+          value: "\(Self.numberText(strain, fractionDigits: 1) ?? "--") / 21",
+          status: "Prior-day load",
+          source: .bridgeDeviceSensor("metrics.prior_strain_0_to_21"),
+          systemImage: "figure.run",
+          detail: "Prior strain input used by recovery score"
+        )
+      )
+    }
+
+    let components = Self.array(output?["components"])
+    if !components.isEmpty {
+      let text = components.prefix(5).compactMap { component -> String? in
+        let name = component["name"] as? String ?? component["component_id"] as? String
+        let score = Self.numberText(component["score_0_to_100"], fractionDigits: 0) ?? "--"
+        guard let name else { return nil }
+        return "\(name) \(score)"
+      }.joined(separator: " · ")
+      items.append(
+        RecoveryTimelineItem(
+          id: "recovery-components",
+          title: "Score components",
+          value: text.isEmpty ? "\(components.count) components" : text,
+          status: "Recovery breakdown",
+          source: .bridge("metrics.recovery_score_from_features"),
+          systemImage: "chart.pie.fill",
+          detail: "Component scores produced by the recovery score run"
+        )
+      )
+    }
+
+    return items
+  }
+
+  private static func shortErrorDescription(_ report: [String: Any]) -> String {
+    let issues = stringArray(report["issues"])
+    if !issues.isEmpty {
+      return issues.joined(separator: " · ")
+    }
+    if let action = firstActionText(in: report) {
+      return action
+    }
+    return "packet score run blocked"
   }
 
   func strainScore0To100(for date: Date = Date(), calendar: Calendar = .current) -> Double {

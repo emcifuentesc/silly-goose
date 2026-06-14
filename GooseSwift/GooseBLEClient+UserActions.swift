@@ -306,7 +306,8 @@ extension GooseBLEClient {
     beginHistoricalSync(
       trigger: rangeFirst ? "manual_range_first" : "manual",
       automatic: false,
-      firstCommandOverride: rangeFirst ? .getDataRange : nil
+      firstCommandOverride: rangeFirst ? .getDataRange : nil,
+      rangeFirst: rangeFirst
     )
   }
 
@@ -316,6 +317,7 @@ extension GooseBLEClient {
       trigger: rangeFirst ? "manual_range_first_preserve" : "manual_preserve",
       automatic: false,
       firstCommandOverride: rangeFirst ? .getDataRange : nil,
+      rangeFirst: rangeFirst,
       acknowledgeHistoricalDataResult: false
     )
   }

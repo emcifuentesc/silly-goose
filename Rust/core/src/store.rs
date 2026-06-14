@@ -6538,6 +6538,42 @@ impl GooseStore {
         Ok(out)
     }
 
+    /// Query K25 IMU samples as raw-count gravity triples across all devices.
+    /// Each K25 frame stores 24 i16 values = 8 XYZ triples at ~8 Hz.
+    /// Returns (device_id, ts_s, x_raw, y_raw, z_raw) for every sub-sample.
+    pub fn query_gen4_k25_imu_all(
+        &self,
+        from_s: i64,
+        to_s: i64,
+    ) -> GooseResult<Vec<(String, i64, i64, i64, i64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT device_id, ts, imu_json FROM gen4_k25_samples
+              WHERE ts >= ?1 AND ts <= ?2
+                AND imu_json != '[]'
+              ORDER BY device_id ASC, ts ASC",
+        )?;
+        let mut out = Vec::new();
+        let rows = stmt.query_map(params![from_s, to_s], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in rows.filter_map(|r| r.ok()) {
+            let (device_id, ts, json) = row;
+            let vals: Vec<i64> = serde_json::from_str(&json).unwrap_or_default();
+            let n_triples = vals.len() / 3;
+            for i in 0..n_triples {
+                let x = vals[i * 3];
+                let y = vals[i * 3 + 1];
+                let z = vals[i * 3 + 2];
+                out.push((device_id.clone(), ts, x, y, z));
+            }
+        }
+        Ok(out)
+    }
+
     /// Query valid RR intervals (300–2500 ms) from gen4_ppg_beats ordered by ts_ms.
     pub fn query_gen4_ppg_beats_rr(
         &self,
@@ -6962,22 +6998,20 @@ fn validate_optional_non_negative_i64(name: &str, value: Option<i64>) -> GooseRe
 }
 
 fn validate_optional_finite_f64(name: &str, value: Option<f64>) -> GooseResult<()> {
-    if let Some(value) = value {
-        if !value.is_finite() {
+    if let Some(value) = value
+        && !value.is_finite() {
             return Err(GooseError::message(format!("{name} must be finite")));
         }
-    }
     Ok(())
 }
 
 fn validate_optional_non_negative_f64(name: &str, value: Option<f64>) -> GooseResult<()> {
-    if let Some(value) = value {
-        if !value.is_finite() || value < 0.0 {
+    if let Some(value) = value
+        && (!value.is_finite() || value < 0.0) {
             return Err(GooseError::message(format!(
                 "{name} must be finite and non-negative",
             )));
         }
-    }
     Ok(())
 }
 

@@ -288,6 +288,162 @@ extension HealthDataStore {
       catalogSource = .unavailable("preview missing catalog")
       calibrationLabelsImported = false
       calibrationRunComplete = false
+    case .recoveryNoData:
+      previewMissingData = false
+      primarySleepDetail = nil
+      packetInputStatus = "No run"
+      packetScoreStatus = "No run"
+      externalSleepImportStatus = "External sleep imports disabled"
+      packetInputReports = [:]
+      packetScoreReports = [:]
+      referenceComparisonReports = [:]
+      referenceRunStatusByFamily = [:]
+      catalogStatus = "Preview recovery no data"
+      catalogSource = .unavailable("recovery preview has no trusted local data")
+    case .recoveryBridgeData:
+      previewMissingData = false
+      primarySleepDetail = nil
+      packetInputStatus = "Bridge preview data"
+      packetScoreStatus = "Bridge preview data"
+      externalSleepImportStatus = "External sleep imports disabled"
+      packetInputReports = [:]
+      packetScoreReports = [:]
+      referenceComparisonReports = [:]
+      referenceRunStatusByFamily = [:]
+      catalogStatus = "Preview bridge recovery data"
+      catalogSource = .bridge("preview recovery bridge report")
+      packetScoreReports["recovery"] = recoveryBridgeDataPreviewReport()
+      packetScoreReports["sleep"] = recoveryBridgeDataPreviewSleepReport()
+    case .recoveryPacketBlocked:
+      previewMissingData = false
+      primarySleepDetail = nil
+      packetInputStatus = "No run"
+      packetScoreStatus = "Bridge score run blocked: recovery inputs incomplete"
+      externalSleepImportStatus = "External sleep imports disabled"
+      packetInputReports = [:]
+      packetScoreReports = [
+        "recovery": [
+          "schema": "goose.recovery.feature_score_report",
+          "generated_by": "preview",
+          "pass": false,
+          "start_time": "0000",
+          "end_time": "9999",
+          "issues": ["hrv_rmssd_missing", "resting_hr_missing", "sleep_score_missing"],
+          "next_actions": [
+            [
+              "summary": "Sync trusted HRV, resting HR, and sleep inputs before running recovery."
+            ]
+          ],
+          "score_result": NSNull(),
+        ]
+      ]
+      referenceComparisonReports = [:]
+      referenceRunStatusByFamily = [:]
+      catalogStatus = "Preview packet-run-blocked recovery"
+      catalogSource = .bridge("preview blocked recovery bridge report")
     }
+  }
+
+  private static func isoString(_ date: Date) -> String {
+    ISO8601DateFormatter().string(from: date)
+  }
+
+  private func recoveryBridgeDataPreviewReport() -> [String: Any] {
+    let start = Self.isoString(Calendar.current.date(byAdding: .hour, value: -9, to: Date()) ?? Date())
+    let end = Self.isoString(Date())
+    return [
+      "schema": "goose.recovery.feature_score_report",
+      "generated_by": "preview",
+      "pass": true,
+      "start_time": start,
+      "end_time": end,
+      "hrv_start_time": start,
+      "hrv_end_time": end,
+      "resting_start_time": start,
+      "resting_end_time": end,
+      "sleep_start_time": start,
+      "sleep_end_time": end,
+      "prior_strain_start_time": start,
+      "prior_strain_end_time": end,
+      "score_result": [
+        "algorithm_id": "goose.recovery.v0",
+        "algorithm_version": "v0",
+        "family": "recovery",
+        "score_0_to_100": 72.0,
+        "components": [
+          ["name": "HRV", "component_id": "hrv", "score_0_to_100": 78.0, "weight": 0.30],
+          ["name": "Resting HR", "component_id": "rhr", "score_0_to_100": 70.0, "weight": 0.25],
+          ["name": "Sleep", "component_id": "sleep", "score_0_to_100": 82.0, "weight": 0.25],
+          ["name": "Temperature", "component_id": "temperature", "score_0_to_100": 65.0, "weight": 0.10],
+          ["name": "Strain", "component_id": "strain", "score_0_to_100": 74.0, "weight": 0.10],
+        ]
+      ],
+      "recovery_input": [
+        "start_time": start,
+        "end_time": end,
+        "hrv_rmssd_ms": 54.0,
+        "hrv_baseline_rmssd_ms": 48.0,
+        "resting_hr_bpm": 52.0,
+        "resting_hr_baseline_bpm": 58.0,
+        "respiratory_rate_rpm": 13.2,
+        "respiratory_rate_baseline_rpm": 14.1,
+        "skin_temp_delta_c": 0.4,
+        "sleep_score_0_to_100": 82.0,
+        "prior_strain_0_to_21": 8.5,
+        "input_ids": ["preview-hrv", "preview-resting-hr", "preview-sleep", "preview-vitals", "preview-strain"],
+      ],
+      "provided_vitals": [
+        "source": "packet-derived recovery vitals",
+        "trusted_metric_input": true,
+        "quality_flags": [],
+        "respiratory_rate_rpm": 13.2,
+        "respiratory_rate_baseline_rpm": 14.1,
+        "skin_temp_delta_c": 0.4,
+      ],
+      "daily": [
+        ["date": "06-04", "score_0_to_100": 65.0],
+        ["date": "06-05", "score_0_to_100": 69.0],
+        ["date": "06-06", "score_0_to_100": 71.0],
+        ["date": "06-07", "score_0_to_100": 72.0],
+      ],
+      "issues": [],
+      "next_actions": [],
+    ]
+  }
+
+  private func recoveryBridgeDataPreviewSleepReport() -> [String: Any] {
+    let start = Calendar.current.date(byAdding: .hour, value: -9, to: Date()) ?? Date()
+    let end = Date()
+    return [
+      "schema": "goose.sleep.feature_score_report",
+      "generated_by": "preview",
+      "pass": true,
+      "sleep_window": [
+        "start_time": Self.isoString(start),
+        "end_time": Self.isoString(end),
+        "sleep_duration_minutes": 438.0,
+        "time_in_bed_minutes": 486.0,
+      ],
+      "sleep_input": [
+        "start_time": Self.isoString(start),
+        "end_time": Self.isoString(end),
+        "sleep_duration_minutes": 438.0,
+        "time_in_bed_minutes": 486.0,
+      ],
+      "score_result": [
+        "algorithm_id": "goose.sleep.v0",
+        "algorithm_version": "v0",
+        "family": "sleep",
+        "score_0_to_100": 82.0,
+        "sleep_duration_minutes": 438.0,
+        "time_in_bed_minutes": 486.0,
+        "stage_minutes": [
+          "awake": 28.0,
+          "rem": 92.0,
+          "core": 236.0,
+          "deep": 82.0,
+        ],
+      ],
+    ]
   }
 }

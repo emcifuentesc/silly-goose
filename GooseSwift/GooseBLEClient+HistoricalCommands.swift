@@ -9,6 +9,7 @@ extension GooseBLEClient {
     automatic: Bool,
     firstCommandOverride: HistoricalCommandKind? = nil,
     rangeOnly: Bool = false,
+    rangeFirst: Bool = true,
     acknowledgeHistoricalDataResult: Bool = true
   ) {
     guard !isHistoricalSyncing else {
@@ -56,12 +57,12 @@ extension GooseBLEClient {
     historicalRangeRetryWorkItem?.cancel()
     let toastDetail = rangeOnly
       ? "Polling historical range"
-      : (automatic ? "Requesting missed packets" : "Requesting historical packets")
+      : (automatic ? "Requesting missed packets" : "Requesting missed packets directly")
     publishSyncToast(phase: .syncing, detail: toastDetail)
     // WHOOP 4.0 does not return the v5 paged "final range" response, so the range-poll just times
     // out and fails the sync. Gen4 (like my-whoop) drives the offload straight from
     // SEND_HISTORICAL_DATA → HISTORY_START/data/END; the range poll is a v5-only precursor.
-    let useRangePoll = requestHistoricalRangeBeforeTransfer && activeDeviceGeneration == .gen5
+    let useRangePoll = requestHistoricalRangeBeforeTransfer && activeDeviceGeneration == .gen5 && rangeFirst
     var firstCommand = firstCommandOverride ?? (useRangePoll ? .getDataRange : .sendHistoricalData)
     // Several callers pass `firstCommandOverride: .getDataRange` (rangeFirst). On Gen4 that hangs,
     // so for any real transfer (not an explicit range-only poll) lead with SEND_HISTORICAL_DATA.
@@ -164,11 +165,13 @@ extension GooseBLEClient {
   }
 
   func writeType(for characteristic: CBCharacteristic) -> CBCharacteristicWriteType? {
-    if characteristic.properties.contains(.write) {
-      return .withResponse
-    }
+    // Prefer the non-blocking write path when the strap advertises it; command responses still
+    // arrive through notifications and this keeps historical sync from waiting on per-write ACKs.
     if characteristic.properties.contains(.writeWithoutResponse) {
       return .withoutResponse
+    }
+    if characteristic.properties.contains(.write) {
+      return .withResponse
     }
     return nil
   }

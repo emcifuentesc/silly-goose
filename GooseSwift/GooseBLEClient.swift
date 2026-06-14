@@ -51,6 +51,7 @@ final class GooseBLEClient: NSObject, ObservableObject {
   @Published var historicalSyncStatus = "idle"
   @Published var historicalPacketCount = 0
   @Published var lastHistoricalSyncCompletedAt: Date?
+  @Published var lastHistoricalSyncDuration: TimeInterval?
   @Published var lastHistoricalRangeCommandStatus = "No GET_DATA_RANGE response"
   @Published var alarmCommandStatus = "No alarm command sent"
   @Published var lastAlarmCommandFrameHex = ""
@@ -306,6 +307,7 @@ final class GooseBLEClient: NSObject, ObservableObject {
   let historicalRangeRetryDelay: TimeInterval = 1
   let historicalRangeMaxRetries = 2
   let historicalTransferMaxRequestAttempts = 3
+  var historicalSyncStartedAt: Date?
   var historicalSyncRunID = UUID()
   var historicalRangePollOnly = false
   var autoStartedPhysiologyCapture = false
@@ -323,7 +325,6 @@ final class GooseBLEClient: NSObject, ObservableObject {
   var highFrequencyHistorySyncRequestedExpiry: Date?
   var debugSkinTemperatureCommandSent = false
   var debugSkinTemperatureCommandWorkItem: DispatchWorkItem?
-
   enum DefaultsKey {
     static let rememberedDeviceID = "goose.swift.rememberedDeviceID"
     static let rememberedDeviceName = "goose.swift.rememberedDeviceName"
@@ -953,11 +954,9 @@ final class GooseBLEClient: NSObject, ObservableObject {
     }
     return "\(batteryLevelPercent)% | \(status) | \(batteryPowerStatus)"
   }
-
   var canReconnectRemembered: Bool {
     central?.state == .poweredOn && activePeripheral == nil && rememberedDeviceID != nil
   }
-
   var hasRememberedDevice: Bool {
     rememberedDeviceID != nil
   }
@@ -978,11 +977,15 @@ final class GooseBLEClient: NSObject, ObservableObject {
     loadPersistedGen4Sleep()
     loadPersistedGen4Recovery()
     record(source: "app", title: "ble.init", body: "startCentral=\(startCentral)")
-    record(
-      source: "app",
-      title: "physiology_capture.launch_config",
-      body: "physiologyAutoStart=\(autoStartPhysiologyCaptureOnReady) prioritizeLive=\(prioritizeLiveCaptureOnReady) autoHistoricalSync=\(autoHistoricalSyncOnReady) debugSkinTemp=\(autoSendDebugSkinTemperatureCommand) args=\(ProcessInfo.processInfo.arguments.joined(separator: " "))"
-    )
+    let launchArgs = ProcessInfo.processInfo.arguments.joined(separator: " ")
+    let launchConfig = [
+      "physiologyAutoStart=\(autoStartPhysiologyCaptureOnReady)",
+      "prioritizeLive=\(prioritizeLiveCaptureOnReady)",
+      "autoHistoricalSync=\(autoHistoricalSyncOnReady)",
+      "debugSkinTemp=\(autoSendDebugSkinTemperatureCommand)",
+      "args=\(launchArgs)"
+    ].joined(separator: " ")
+    record(source: "app", title: "physiology_capture.launch_config", body: launchConfig)
     if startCentral {
       if Self.canCreateCentralWithoutPrompt || prioritizeLiveCaptureOnReady || autoSendDebugSkinTemperatureCommand {
         ensureCentral()

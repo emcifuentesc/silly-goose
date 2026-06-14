@@ -30,6 +30,16 @@ struct HealthTrendPoint: Identifiable {
   let value: Double
 }
 
+struct RecoveryTimelineItem: Identifiable {
+  let id: String
+  let title: String
+  let value: String
+  let status: String
+  let source: HealthDataSource
+  let systemImage: String
+  let detail: String
+}
+
 enum MetricSourceKind: String, Codable, CaseIterable, Equatable {
   case deviceCounter = "device_counter"
   case deviceSensor = "device_sensor"
@@ -281,6 +291,9 @@ struct DailyMetricWindow {
 enum HealthPreviewState {
   case populated
   case missing
+  case recoveryNoData
+  case recoveryBridgeData
+  case recoveryPacketBlocked
 }
 
 struct HealthAlgorithmDefinition: Identifiable {

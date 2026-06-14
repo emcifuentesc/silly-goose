@@ -35,7 +35,8 @@ enum CoachTipFactory {
       ),
       source: "Local readiness, scores, and live HR",
       prompt: """
-      Give me today's coaching priority from my local Goose context. Use readiness, sleep, recovery, strain, stress, live heart rate, and missing-data gaps. Cite the local tool outputs and keep it to one concrete next action.
+      Give me today's coaching priority from my local Goose context. Use readiness, sleep, recovery, strain, stress, live heart rate,
+      and missing-data gaps. Cite the local tool outputs and keep it to one concrete next action.
 
       Current local highlights:
       - Readiness: \(readiness)
@@ -72,7 +73,10 @@ enum CoachTipFactory {
         title: "\(route.title) Coach",
         message: "\(snapshot.title): \(snapshot.displayValue) | \(snapshot.status).",
         source: snapshot.provenance,
-        prompt: "Explain my \(route.title.lowercased()) page using the local Goose context. Cite the tool outputs and call out stale or missing data.",
+        prompt: """
+        Explain my \(route.title.lowercased()) page using the local Goose context.
+        Cite the tool outputs and call out stale or missing data.
+        """,
         systemImage: "sparkles",
         tint: snapshot.tint
       )
@@ -96,7 +100,9 @@ enum CoachTipFactory {
       ),
       source: "Local sleep score and schedule",
       prompt: """
-      Explain my sleep page and give one practical next action. Use only local Goose context and call out missing data and provenance.
+      Explain my sleep page and give one practical next action.
+      Use only local Goose context and call out missing data and provenance.
+      Keep the recommendation concrete and cite the local outputs.
 
       Current local highlights:
       - Sleep score: \(snapshot.displayValue) | \(snapshot.status) | \(snapshot.freshness)
@@ -113,13 +119,13 @@ enum CoachTipFactory {
 
   private static func recoveryTip(healthStore: HealthDataStore) -> CoachInlineTip {
     let snapshot = healthStore.snapshot(for: .recovery)
-    let recovery = "\(healthStore.recoveryScoreDisplayValue())% recovery"
+    let recovery = healthStore.recoveryScoreDisplayText()
     let hrv = healthStore.recoveryHRVDisplayText()
     let restingHeartRate = healthStore.recoveryRestingHRDisplayText()
     let vitals = [
       healthStore.recoveryRespiratoryRateDisplayText(),
       healthStore.recoveryOxygenSaturationDisplayText(),
-      healthStore.recoveryWristTemperatureDisplayText(),
+      healthStore.recoveryWristTemperatureDisplayText()
     ].joined(separator: " | ")
 
     return CoachInlineTip(
@@ -128,7 +134,9 @@ enum CoachTipFactory {
       message: sentence(recovery, "HRV: \(hrv)", "Vitals: \(vitals)"),
       source: "Local recovery, HRV, RHR, and vitals",
       prompt: """
-      Explain my recovery page and give one practical next action. Use recovery score, HRV, resting HR, provided vitals, and missing vitals. Cite local tool outputs.
+      Explain my recovery page and give one practical next action.
+      Use recovery score, HRV, resting HR, provided vitals, and missing vitals.
+      Cite local tool outputs and avoid assumptions when data is absent.
 
       Current local highlights:
       - Recovery snapshot: \(snapshot.displayValue) | \(snapshot.status) | \(snapshot.freshness)
@@ -156,7 +164,9 @@ enum CoachTipFactory {
       message: sentence(strain, "Activity: \(activity)", firstUseful(nextAction, motion)),
       source: "Local strain, motion, and activity",
       prompt: """
-      Explain my strain page and give one practical training-load next action. Preserve WHOOP's 0-21 strain semantics and cite local tool outputs.
+      Explain my strain page and give one practical training-load next action.
+      Preserve WHOOP's 0-21 strain semantics and cite local tool outputs.
+      Keep the next action specific to the current training load.
 
       Current local highlights:
       - Strain snapshot: \(snapshot.displayValue) | \(snapshot.status) | \(snapshot.freshness)
@@ -187,7 +197,9 @@ enum CoachTipFactory {
       message: sentence(stress, "HRV: \(hrv)", "Latest HR: \(liveHeartRate)"),
       source: "Local stress, HRV, and live HR",
       prompt: """
-      Explain my stress page and give one practical next action. Use stress score, HRV, latest heart rate, and missing time-series data. Cite local tool outputs.
+      Explain my stress page and give one practical next action.
+      Use stress score, HRV, latest heart rate, and missing time-series data.
+      Cite local tool outputs and call out stale or missing data.
 
       Current local highlights:
       - Stress snapshot: \(snapshot.displayValue) | \(snapshot.status) | \(snapshot.freshness)

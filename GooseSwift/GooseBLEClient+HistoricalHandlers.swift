@@ -544,11 +544,13 @@ extension GooseBLEClient {
       terminal: false,
       failed: false
     )
+    let pendingBody = "\(pending.kind.name) seq=\(pending.sequence) returned PENDING (2); waiting for SUCCESS/FAILURE/UNSUPPORTED."
+    let rangeBody = "range_pending=\(historicalRangePendingResponses) grace=\(Int(historicalPendingResponseGrace.rounded()))s"
     record(
       level: .debug,
       source: "ble.sync",
       title: "historical_sync.command.pending",
-      body: "\(pending.kind.name) seq=\(pending.sequence) returned PENDING (2); waiting for SUCCESS/FAILURE/UNSUPPORTED. range_pending=\(historicalRangePendingResponses) grace=\(Int(historicalPendingResponseGrace.rounded()))s"
+      body: "\(pendingBody) \(rangeBody)"
     )
   }
 
@@ -597,11 +599,15 @@ extension GooseBLEClient {
       }
       pendingHistoryEndAckPayload = ackPayload
       historyEndAckQueued = true
+      let ackBody = Data(ackPayload).hexString
+      let historyEndBody = Data(payload.dropFirst(9)).hexString
+      let packetCount = historicalPacketsReceivedThisSync
+      let ackEnabled = historicalDataResultAckEnabled
       record(
         level: .debug,
         source: "ble.sync",
         title: "historical_sync.result_ack.prepared",
-        body: "payload=\(Data(ackPayload).hexString) history_end_body=\(Data(payload.dropFirst(9)).hexString) packets=\(historicalPacketsReceivedThisSync) ack_enabled=\(historicalDataResultAckEnabled)"
+        body: "payload=\(ackBody) history_end_body=\(historyEndBody) packets=\(packetCount) ack_enabled=\(ackEnabled)"
       )
       if pendingHistoricalCommand == nil {
         _ = processQueuedHistoricalDataResultAck(reason: "history_end")
@@ -646,6 +652,8 @@ extension GooseBLEClient {
     historicalDataResultAckEnabled = true
     let completedAt = Date()
     let rangeOnly = historicalRangePollOnly
+    lastHistoricalSyncDuration = completedAt.timeIntervalSince(historicalSyncStartedAt ?? completedAt)
+    historicalSyncStartedAt = nil
     isHistoricalSyncing = false
     historicalRangePollOnly = false
     publishHistoricalPacketCountIfNeeded(force: true, at: completedAt)
@@ -682,6 +690,9 @@ extension GooseBLEClient {
     historicalRangeRetryCount = 0
     historicalTransferRequestAttemptCount = 0
     historicalDataResultAckEnabled = true
+    let completedAt = Date()
+    lastHistoricalSyncDuration = completedAt.timeIntervalSince(historicalSyncStartedAt ?? completedAt)
+    historicalSyncStartedAt = nil
     isHistoricalSyncing = false
     historicalRangePollOnly = false
     publishHistoricalPacketCountIfNeeded(force: true)

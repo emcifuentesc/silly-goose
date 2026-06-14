@@ -65,6 +65,10 @@ extension HealthDataStore {
         method: "metrics.step_counter_hourly_rollup",
         args: stepCounterHourlyRollupArgs(databasePath: databasePath, writeMetric: true)
       )
+      reports["k25_imu_activity"] = try bridge.request(
+        method: "metrics.k25_imu_activity_estimate",
+        args: k25ImuActivityEstimateArgs(databasePath: databasePath, writeMetric: true)
+      )
       reports["activity_unavailable_status"] = try bridge.request(
         method: "metrics.activity_unavailable_daily_status",
         args: activityUnavailableDailyStatusArgs(databasePath: databasePath, writeMetric: true)
@@ -93,26 +97,8 @@ extension HealthDataStore {
           writeMetric: true
         )
       )
-      reports["recovery_sensor_rollup"] = try bridge.request(
-        method: "metrics.recovery_sensor_daily_rollup",
-        args: recoveryUnavailableDailyStatusArgs(databasePath: databasePath, writeMetric: true)
-      )
-      reports["recovery_unavailable_status"] = try bridge.request(
-        method: "metrics.recovery_unavailable_daily_status",
-        args: recoveryUnavailableDailyStatusArgs(databasePath: databasePath, writeMetric: true)
-      )
-      reports["daily_activity"] = try bridge.request(
-        method: "metrics.daily_activity_metrics",
-        args: dailyActivityMetricListArgs(databasePath: databasePath)
-      )
-      reports["hourly_activity"] = try bridge.request(
-        method: "metrics.hourly_activity_metrics",
-        args: hourlyActivityMetricListArgs(databasePath: databasePath)
-      )
-      reports["daily_recovery"] = try bridge.request(
-        method: "metrics.daily_recovery_metrics",
-        args: dailyRecoveryMetricListArgs(databasePath: databasePath)
-      )
+      let recoveryRollupReports = try Self.recoveryRollupReports(databasePath: databasePath)
+      reports.merge(recoveryRollupReports) { _, new in new }
       return .success(reports)
     } catch {
       return .failure(error)
@@ -420,6 +406,64 @@ extension HealthDataStore {
       return nil
     }
     return years
+  }
+
+  nonisolated static func recoveryRollupReports(databasePath: String) throws -> [String: [String: Any]] {
+    let bridge = GooseRustBridge()
+    var reports: [String: [String: Any]] = [:]
+    reports["recovery_sensor_rollup"] = try bridge.request(
+      method: "metrics.recovery_sensor_daily_rollup",
+      args: recoveryUnavailableDailyStatusArgs(databasePath: databasePath, writeMetric: true)
+    )
+    reports["recovery_unavailable_status"] = try bridge.request(
+      method: "metrics.recovery_unavailable_daily_status",
+      args: recoveryUnavailableDailyStatusArgs(databasePath: databasePath, writeMetric: true)
+    )
+    reports["daily_activity"] = try bridge.request(
+      method: "metrics.daily_activity_metrics",
+      args: dailyActivityMetricListArgs(databasePath: databasePath)
+    )
+    reports["hourly_activity"] = try bridge.request(
+      method: "metrics.hourly_activity_metrics",
+      args: hourlyActivityMetricListArgs(databasePath: databasePath)
+    )
+    reports["daily_recovery"] = try bridge.request(
+      method: "metrics.daily_recovery_metrics",
+      args: dailyRecoveryMetricListArgs(databasePath: databasePath)
+    )
+    return reports
+  }
+
+  nonisolated static func k25ImuActivityEstimateArgs(
+    databasePath: String,
+    writeMetric: Bool
+  ) -> [String: Any] {
+    let window = currentDailyMetricWindow()
+    var args: [String: Any] = [
+      "database_path": databasePath,
+      "start": window.startISO,
+      "end": window.endISO,
+      "sample_rate_hz": 8.0,
+      "min_sample_count": 480,
+      "date_key": window.dateKey,
+      "timezone": window.timezone,
+      "write_metric": writeMetric,
+    ]
+    let profile = OnboardingProfileSnapshot()
+    let calendar = Calendar.autoupdatingCurrent
+    if profile.weightGrams > 0 {
+      let weightKg = Double(profile.weightGrams) / 1000.0
+      if (25.0...300.0).contains(weightKg) {
+        args["profile_weight_kg"] = weightKg
+      }
+    }
+    if let ageYears = profileAgeYears(from: profile.dateOfBirthString, calendar: calendar) {
+      args["profile_age_years"] = ageYears
+    }
+    if let sex = normalizedProfileSex(profile.genderRaw) {
+      args["profile_sex"] = sex
+    }
+    return args
   }
 
   nonisolated static func normalizedProfileSex(_ rawValue: String) -> String? {

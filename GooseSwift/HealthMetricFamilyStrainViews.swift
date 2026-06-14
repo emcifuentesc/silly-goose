@@ -208,7 +208,12 @@ struct HealthMetricFamilyView: View {
         HealthSummaryRow("Stress score", value: summary.hasData ? "\(scoreText)% | \(summary.status)" : summary.status, source: summary.source, systemImage: "waveform.path.ecg"),
         HealthSummaryRow("Confidence", value: summary.hasData ? confidenceText : "--", source: summary.source, systemImage: "checkmark.seal"),
         HealthSummaryRow("Inputs", value: summary.hasData ? summary.inputSummary : "No local stress inputs", source: summary.source, systemImage: "checklist"),
-        HealthSummaryRow("HRV Input", value: isToday ? store.hrvFeatureSummary() : "--", source: isToday ? store.packetInputSource("HRV feature") : store.recoveryHRVSource(for: selectedDate), systemImage: "waveform.path.ecg"),
+        HealthSummaryRow(
+          "HRV Input",
+          value: isToday ? store.hrvFeatureSummary() : "--",
+          source: isToday ? store.packetInputSource("HRV feature") : store.recoveryHRVSource(for: selectedDate),
+          systemImage: "waveform.path.ecg"
+        ),
         HealthSummaryRow("Average HR", value: averageHRText, source: summary.source, systemImage: "heart"),
       ]
     default:
@@ -247,9 +252,14 @@ struct HealthMetricFamilyView: View {
         HealthSummaryRow("Timeline", value: "No sleep timeline", source: .unavailable("sleep stage import not available"), systemImage: "timeline.selection"),
       ]
     case .recovery:
-      return [
-        HealthSummaryRow("Recovery timeline", value: "0 events", source: .unavailable("recovery timeline not available"), systemImage: "timeline.selection"),
-      ]
+      return store.recoveryTimelineItems.map { item in
+        HealthSummaryRow(
+          item.title,
+          value: item.value,
+          source: item.source,
+          systemImage: item.systemImage
+        )
+      }
     case .strain:
       return [
         HealthSummaryRow("Activities", value: "No activities", source: .unavailable("activity sessions unavailable"), systemImage: "plus.circle"),
@@ -268,8 +278,18 @@ struct HealthMetricFamilyView: View {
     switch route {
     case .sleep:
       return [
-        HealthSummaryRow("Score impacts", value: store.sleepV1ComponentBreakdownRows().isEmpty ? "No score component data" : "\(store.sleepV1ComponentBreakdownRows().count) components", source: store.packetScoreSource("sleep score components"), systemImage: "sparkles"),
-        HealthSummaryRow("Confidence", value: store.sleepV1ArchitectureCalibrationSummary().isEmpty ? "No confidence data" : store.sleepV1ArchitectureCalibrationSummary(), source: store.packetScoreSource("sleep score output"), systemImage: "lock"),
+        HealthSummaryRow(
+          "Score impacts",
+          value: store.sleepV1ComponentBreakdownRows().isEmpty ? "No score component data" : "\(store.sleepV1ComponentBreakdownRows().count) components",
+          source: store.packetScoreSource("sleep score components"),
+          systemImage: "sparkles"
+        ),
+        HealthSummaryRow(
+          "Confidence",
+          value: store.sleepV1ArchitectureCalibrationSummary().isEmpty ? "No confidence data" : store.sleepV1ArchitectureCalibrationSummary(),
+          source: store.packetScoreSource("sleep score output"),
+          systemImage: "lock"
+        ),
       ]
     case .recovery:
       return [
@@ -282,8 +302,16 @@ struct HealthMetricFamilyView: View {
       ]
     case .stress:
       let summary = store.stressAlgorithmSummary(for: selectedDateBinding.wrappedValue)
+      let breakdown = summary.hasData
+        ? "High \(Int((summary.high.percent * 100).rounded()))% | Medium \(Int((summary.medium.percent * 100).rounded()))% | Low \(Int((summary.low.percent * 100).rounded()))%"
+        : summary.status
       return [
-        HealthSummaryRow("Breakdown", value: summary.hasData ? "High \(Int((summary.high.percent * 100).rounded()))% | Medium \(Int((summary.medium.percent * 100).rounded()))% | Low \(Int((summary.low.percent * 100).rounded()))%" : summary.status, source: summary.source, systemImage: "chart.bar"),
+        HealthSummaryRow(
+          "Breakdown",
+          value: breakdown,
+          source: summary.source,
+          systemImage: "chart.bar"
+        ),
       ]
     default:
       return []
@@ -344,17 +372,17 @@ struct StrainV2ActivityBackground: View {
       : Color(red: 1.0, green: 0.62, blue: 0.30).opacity(0.16)
 
     for index in 0..<5 {
-      let y = size.height * 0.12 + CGFloat(index) * 38
+      let lineY = size.height * 0.12 + CGFloat(index) * 38
       var path = Path()
-      path.move(to: CGPoint(x: 20, y: y))
-      path.addLine(to: CGPoint(x: size.width - 20, y: y))
+      path.move(to: CGPoint(x: 20, y: lineY))
+      path.addLine(to: CGPoint(x: size.width - 20, y: lineY))
       context.stroke(
         path,
         with: .color(lineColor),
         style: StrokeStyle(lineWidth: 1, lineCap: .round, dash: [3, 12])
       )
 
-      let tickRect = CGRect(x: size.width - 72, y: y - 2, width: 46, height: 4)
+      let tickRect = CGRect(x: size.width - 72, y: lineY - 2, width: 46, height: 4)
       context.fill(
         Path(roundedRect: tickRect, cornerRadius: 2),
         with: .color(labelColor.opacity(index == 4 ? 1 : 0.64))
@@ -921,6 +949,7 @@ struct RecoveryV2EmptyStateCard: View {
             .font(.subheadline.weight(.medium))
             .fontDesign(.rounded)
             .foregroundStyle(palette.secondaryText)
+            .fixedSize(horizontal: false, vertical: true)
         }
 
         Spacer(minLength: 8)

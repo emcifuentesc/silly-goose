@@ -47,6 +47,18 @@ struct HealthPreviewRouteHost: View {
   HealthPreviewRouteHost(route: .recovery, state: .missing)
 }
 
+#Preview("Recovery - No Data") {
+  HealthPreviewRouteHost(route: .recovery, state: .recoveryNoData)
+}
+
+#Preview("Recovery - Bridge Data") {
+  HealthPreviewRouteHost(route: .recovery, state: .recoveryBridgeData)
+}
+
+#Preview("Recovery - Packet Run Blocked") {
+  HealthPreviewRouteHost(route: .recovery, state: .recoveryPacketBlocked)
+}
+
 #Preview("Strain - Populated") {
   HealthPreviewRouteHost(route: .strain, state: .populated)
 }

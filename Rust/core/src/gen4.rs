@@ -138,8 +138,8 @@ impl Schema {
 fn schema() -> &'static Schema {
     static SCHEMA: OnceLock<Schema> = OnceLock::new();
     SCHEMA.get_or_init(|| {
-        let mut s: Schema = serde_json::from_str(SCHEMA_JSON)
-            .expect("vendored whoop_protocol.json is valid");
+        let mut s: Schema =
+            serde_json::from_str(SCHEMA_JSON).expect("vendored whoop_protocol.json is valid");
         s.build_index();
         s
     })
@@ -147,10 +147,10 @@ fn schema() -> &'static Schema {
 
 /// Resolve a type-47 version layout, following a `ref` chain (V12 -> V24). Returns
 /// `(fields, rr_first_off)`. Mirrors Schema.resolveVersion.
-fn resolve_version<'a>(
-    versions: &'a BTreeMap<String, VersionSpec>,
+fn resolve_version(
+    versions: &BTreeMap<String, VersionSpec>,
     version: u8,
-) -> Option<(&'a [FieldSpec], Option<usize>)> {
+) -> Option<(&[FieldSpec], Option<usize>)> {
     let mut key = version.to_string();
     let mut seen: Vec<String> = Vec::new();
     let mut fields: Option<&[FieldSpec]> = None;
@@ -231,7 +231,11 @@ fn i16_at(f: &[u8], off: usize) -> Option<i64> {
 fn s24_at(f: &[u8], off: usize) -> Option<i64> {
     if off + 3 <= f.len() {
         let v = f[off] as i64 | ((f[off + 1] as i64) << 8) | ((f[off + 2] as i64) << 16);
-        Some(if v & 0x80_0000 != 0 { v - 0x100_0000 } else { v })
+        Some(if v & 0x80_0000 != 0 {
+            v - 0x100_0000
+        } else {
+            v
+        })
     } else {
         None
     }
@@ -254,7 +258,11 @@ fn read_dtype_int(f: &[u8], off: usize, dtype: &str) -> Option<i64> {
 fn i16_block(f: &[u8], off: usize, count: usize) -> Vec<i64> {
     let mut n = count;
     if off + n * 2 > f.len() {
-        n = if f.len() > off { (f.len() - off) / 2 } else { 0 };
+        n = if f.len() > off {
+            (f.len() - off) / 2
+        } else {
+            0
+        };
     }
     (0..n).map(|i| i16_at(f, off + i * 2).unwrap()).collect()
 }
@@ -318,7 +326,10 @@ struct Builder<'a> {
 
 impl<'a> Builder<'a> {
     fn new(frame: &'a [u8]) -> Self {
-        Self { frame, parsed: BTreeMap::new() }
+        Self {
+            frame,
+            parsed: BTreeMap::new(),
+        }
     }
 
     fn add(&mut self, name: &str, cat: &str, value: Value) {
@@ -344,7 +355,9 @@ fn int_val(v: i64) -> Value {
     Value::Number(v.into())
 }
 fn float_val(v: f64) -> Value {
-    serde_json::Number::from_f64(v).map(Value::Number).unwrap_or(Value::Null)
+    serde_json::Number::from_f64(v)
+        .map(Value::Number)
+        .unwrap_or(Value::Null)
 }
 
 // ---------------------------------------------------------------------------
@@ -401,8 +414,12 @@ pub fn decode_frame(frame: &[u8]) -> Gen4Frame {
         Some(spec) => {
             // Static fields from the schema (u8/u16/u32/i16 only; f32/s24 live in post-hooks).
             for fld in &spec.fields {
-                let Some(dtype) = fld.dtype.as_deref() else { continue };
-                let Some(v) = read_dtype_int(frame, fld.off, dtype) else { continue };
+                let Some(dtype) = fld.dtype.as_deref() else {
+                    continue;
+                };
+                let Some(v) = read_dtype_int(frame, fld.off, dtype) else {
+                    continue;
+                };
                 let value = match &fld.enum_key {
                     Some(key) => Value::String(schema.enum_name(key, v)),
                     None => int_val(v),
@@ -467,33 +484,38 @@ fn post_realtime_data(b: &mut Builder, frame: &[u8]) {
             rrs.push(v);
         }
     }
-    b.put("rr_intervals", Value::Array(rrs.into_iter().map(int_val).collect()));
+    b.put(
+        "rr_intervals",
+        Value::Array(rrs.into_iter().map(int_val).collect()),
+    );
 }
 
 fn post_event(b: &mut Builder, frame: &[u8], length: Option<usize>, schema: &Schema) {
     let ev_val = frame.get(6).map(|x| *x as i64);
-    let ev_name = ev_val.map(|v| {
-        schema.enums.get("EventNumber").and_then(|m| m.get(&v.to_string())).cloned()
-    }).flatten();
+    let ev_name = ev_val
+        .and_then(|v| {
+            schema
+                .enums
+                .get("EventNumber")
+                .and_then(|m| m.get(&v.to_string()))
+                .cloned()
+        });
     let Some(length) = length else { return };
     match ev_name.as_deref() {
         Some("BATTERY_LEVEL") => {
             b.region(7, length, "BATTERY_LEVEL payload", "battery");
-            if let Some(raw) = u16_at(frame, 17) {
-                if raw <= 1100 {
+            if let Some(raw) = u16_at(frame, 17)
+                && raw <= 1100 {
                     b.put("battery_pct", float_val(raw as f64 / 10.0));
                 }
-            }
-            if let Some(mv) = u16_at(frame, 21) {
-                if (3000..=4300).contains(&mv) {
+            if let Some(mv) = u16_at(frame, 21)
+                && (3000..=4300).contains(&mv) {
                     b.put("battery_mV", int_val(mv));
                 }
-            }
-            if let Some(ch) = u8_at(frame, 26) {
-                if ch <= 1 {
+            if let Some(ch) = u8_at(frame, 26)
+                && ch <= 1 {
                     b.put("battery_charging", int_val(ch & 1));
                 }
-            }
         }
         Some("EXTENDED_BATTERY_INFORMATION") => {
             let pay_end = length.min(frame.len());
@@ -525,9 +547,14 @@ fn post_command_response(b: &mut Builder, frame: &[u8], length: Option<usize>, s
     let pay = &frame[7..pay_end];
     b.region(7, length, "response payload", "cmd");
     let cmd = frame.get(6).map(|x| *x as i64);
-    let name = cmd.map(|v| {
-        schema.enums.get("CommandNumber").and_then(|m| m.get(&v.to_string())).cloned()
-    }).flatten();
+    let name = cmd
+        .and_then(|v| {
+            schema
+                .enums
+                .get("CommandNumber")
+                .and_then(|m| m.get(&v.to_string()))
+                .cloned()
+        });
     match name.as_deref() {
         Some("GET_BATTERY_LEVEL") if pay.len() >= 4 => {
             let v = pay[2] as i64 | ((pay[3] as i64) << 8);
@@ -559,7 +586,12 @@ fn post_command_response(b: &mut Builder, frame: &[u8], length: Option<usize>, s
                     | ((buf[at + 3] as u32) << 24)
             };
             let (h0, h1, h2, h3) = (le32(&buf, 3), le32(&buf, 7), le32(&buf, 11), le32(&buf, 15));
-            let (b0, b1, b2, b3) = (le32(&buf, 19), le32(&buf, 23), le32(&buf, 27), le32(&buf, 31));
+            let (b0, b1, b2, b3) = (
+                le32(&buf, 19),
+                le32(&buf, 23),
+                le32(&buf, 27),
+                le32(&buf, 31),
+            );
             b.put("fw_harvard", Value::String(format!("{h0}.{h1}.{h2}.{h3}")));
             b.put("fw_boylston", Value::String(format!("{b0}.{b1}.{b2}.{b3}")));
         }
@@ -577,8 +609,14 @@ fn post_command_response(b: &mut Builder, frame: &[u8], length: Option<usize>, s
                 o += 1;
             }
             if let (Some(lo), Some(hi)) = (uniq.iter().min().copied(), uniq.iter().max().copied()) {
-                b.put("history_oldest", Value::String(format_utc_minute(lo as i64)));
-                b.put("history_newest", Value::String(format_utc_minute(hi as i64)));
+                b.put(
+                    "history_oldest",
+                    Value::String(format_utc_minute(lo as i64)),
+                );
+                b.put(
+                    "history_newest",
+                    Value::String(format_utc_minute(hi as i64)),
+                );
             }
         }
         _ => {}
@@ -597,13 +635,20 @@ fn post_raw_data(b: &mut Builder, frame: &[u8], length: Option<usize>, spec: &Pa
     };
     match variant.kind.as_str() {
         "imu" => {
-            let (Some(hr_off), Some(rr_count_off), Some(rr_first_off), Some(samples), Some(tail_from)) = (
+            let (
+                Some(hr_off),
+                Some(rr_count_off),
+                Some(rr_first_off),
+                Some(samples),
+                Some(tail_from),
+            ) = (
                 variant.hr_off,
                 variant.rr_count_off,
                 variant.rr_first_off,
                 variant.samples,
                 variant.tail_from,
-            ) else {
+            )
+            else {
                 return;
             };
             let hr = u8_at(frame, hr_off);
@@ -621,7 +666,10 @@ fn post_raw_data(b: &mut Builder, frame: &[u8], length: Option<usize>, spec: &Pa
             if let Some(hr) = hr {
                 b.put("heart_rate", int_val(hr));
             }
-            b.put("rr_intervals", Value::Array(rr_vals.into_iter().map(int_val).collect()));
+            b.put(
+                "rr_intervals",
+                Value::Array(rr_vals.into_iter().map(int_val).collect()),
+            );
             for (name, off, cat) in variant.axes.iter().flatten() {
                 let vals = i16_block(frame, *off, samples);
                 let mean = if vals.is_empty() {
@@ -638,15 +686,28 @@ fn post_raw_data(b: &mut Builder, frame: &[u8], length: Option<usize>, spec: &Pa
                     b.put(&format!("{name}_mean"), mean_value(mean));
                 }
             }
-            b.region(tail_from, length, "tail (optical? - not parsed by app)", "unknown");
+            b.region(
+                tail_from,
+                length,
+                "tail (optical? - not parsed by app)",
+                "unknown",
+            );
         }
         "optical" => {
-            let (Some(ppg_off), Some(ppg_stride), Some(ppg_samples), Some(config_from)) =
-                (variant.ppg_off, variant.ppg_stride, variant.ppg_samples, variant.config_from)
-            else {
+            let (Some(ppg_off), Some(ppg_stride), Some(ppg_samples), Some(config_from)) = (
+                variant.ppg_off,
+                variant.ppg_stride,
+                variant.ppg_samples,
+                variant.config_from,
+            ) else {
                 return;
             };
-            b.region(config_from, ppg_off, "optical config header (UNKNOWN)", "unknown");
+            b.region(
+                config_from,
+                ppg_off,
+                "optical config header (UNKNOWN)",
+                "unknown",
+            );
             let mut vals = Vec::new();
             for i in 0..ppg_samples {
                 match s24_at(frame, ppg_off + i * ppg_stride) {
@@ -693,25 +754,41 @@ fn post_historical_data(
     let version = frame[5];
     b.put("hist_version", int_val(version as i64));
     let Some((fields, rr_first)) = resolve_version(&spec.versions, version) else {
-        b.region(7, length, &format!("HISTORICAL_DATA v{version} (unmapped layout)"), "unknown");
+        b.region(
+            7,
+            length,
+            &format!("HISTORICAL_DATA v{version} (unmapped layout)"),
+            "unknown",
+        );
         return;
     };
     if fields.is_empty() {
-        b.region(7, length, &format!("HISTORICAL_DATA v{version} (unmapped layout)"), "unknown");
+        b.region(
+            7,
+            length,
+            &format!("HISTORICAL_DATA v{version} (unmapped layout)"),
+            "unknown",
+        );
         return;
     }
     for fld in fields {
-        let Some(dtype) = fld.dtype.as_deref() else { continue };
+        let Some(dtype) = fld.dtype.as_deref() else {
+            continue;
+        };
         let value = match dtype {
             "u8" | "u16" | "u32" => {
-                let Some(v) = read_dtype_int(frame, fld.off, dtype) else { continue };
+                let Some(v) = read_dtype_int(frame, fld.off, dtype) else {
+                    continue;
+                };
                 match &fld.enum_key {
                     Some(key) => Value::String(schema.enum_name(key, v)),
                     None => int_val(v),
                 }
             }
             "f32" => {
-                let Some(d) = f32_at(frame, fld.off) else { continue };
+                let Some(d) = f32_at(frame, fld.off) else {
+                    continue;
+                };
                 float_val(d)
             }
             _ => continue,
@@ -720,18 +797,24 @@ fn post_historical_data(
     }
     let mut rr_vals = Vec::new();
     if let Some(rr_first) = rr_first {
-        let rrn = b.parsed.get("rr_count").and_then(|v| v.as_i64()).unwrap_or(0);
+        let rrn = b
+            .parsed
+            .get("rr_count")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
         for i in 0..rrn.min(4) {
             let o = rr_first + (i as usize) * 2;
-            if let Some(v) = u16_at(frame, o) {
-                if v != 0 {
+            if let Some(v) = u16_at(frame, o)
+                && v != 0 {
                     b.add(&format!("rr[{i}]"), "rr", int_val(v));
                     rr_vals.push(v);
                 }
-            }
         }
     }
-    b.put("rr_intervals", Value::Array(rr_vals.into_iter().map(int_val).collect()));
+    b.put(
+        "rr_intervals",
+        Value::Array(rr_vals.into_iter().map(int_val).collect()),
+    );
 }
 
 fn post_metadata(b: &mut Builder, frame: &[u8], length: Option<usize>) {
@@ -765,8 +848,16 @@ fn post_metadata(b: &mut Builder, frame: &[u8], length: Option<usize>) {
 fn post_console_logs(b: &mut Builder, frame: &[u8], length: Option<usize>) {
     let Some(length) = length else { return };
     let lo = 11usize;
-    let hi = if length >= 1 { (length - 1).min(frame.len()) } else { 0 };
-    let txt = if lo < hi { bytes_to_escaped_string(&frame[lo..hi]) } else { String::new() };
+    let hi = if length >= 1 {
+        (length - 1).min(frame.len())
+    } else {
+        0
+    };
+    let txt = if lo < hi {
+        bytes_to_escaped_string(&frame[lo..hi])
+    } else {
+        String::new()
+    };
     b.region(7, length, "console log text", "text");
     b.put("log", Value::String(txt));
 }
@@ -777,7 +868,10 @@ fn bytes_to_escaped_string(bytes: &[u8]) -> String {
     let mut i = 0;
     while i < bytes.len() {
         match std::str::from_utf8(&bytes[i..]) {
-            Ok(s) => { out.push_str(s); break; }
+            Ok(s) => {
+                out.push_str(s);
+                break;
+            }
             Err(e) => {
                 let valid = e.valid_up_to();
                 if valid > 0 {
@@ -938,11 +1032,18 @@ fn append_battery(out: &mut Streams, ts: i64, p: &BTreeMap<String, Value>) {
         return;
     }
     let charging = p_i64(p, "battery_charging").map(|c| c != 0);
-    out.battery.push(BatterySample { ts, soc, mv, charging });
+    out.battery.push(BatterySample {
+        ts,
+        soc,
+        mv,
+        charging,
+    });
 }
 
 fn push_event(out: &mut Streams, p: &BTreeMap<String, Value>) {
-    let Some(ts) = p_i64(p, "event_timestamp") else { return };
+    let Some(ts) = p_i64(p, "event_timestamp") else {
+        return;
+    };
     let kind = p_str(p, "event").unwrap_or("").to_string();
     if kind.starts_with("BATTERY_LEVEL") {
         append_battery(out, ts, p);
@@ -996,11 +1097,10 @@ pub fn extract_historical_streams(frames: &[Gen4Frame], device_ref: i64, wall_re
         match r.type_name.as_str() {
             "HISTORICAL_DATA" => {
                 let Some(ts) = p_i64(p, "unix") else { continue };
-                if let Some(bpm) = p_i64(p, "heart_rate") {
-                    if bpm != 0 {
+                if let Some(bpm) = p_i64(p, "heart_rate")
+                    && bpm != 0 {
                         out.hr.push(HrSample { ts, bpm });
                     }
-                }
                 if let Some(rrs) = p_i64_array(p, "rr_intervals") {
                     for rr in rrs {
                         out.rr.push(RrInterval { ts, rr_ms: rr });
@@ -1015,10 +1115,18 @@ pub fn extract_historical_streams(frames: &[Gen4Frame], device_ref: i64, wall_re
                     });
                 }
                 if let Some(raw) = p_i64(p, "skin_temp_raw") {
-                    out.skin_temp.push(SkinTempSample { ts, raw, unit: RAW_ADC.to_string() });
+                    out.skin_temp.push(SkinTempSample {
+                        ts,
+                        raw,
+                        unit: RAW_ADC.to_string(),
+                    });
                 }
                 if let Some(raw) = p_i64(p, "resp_rate_raw") {
-                    out.resp.push(RespSample { ts, raw, unit: RAW_ADC.to_string() });
+                    out.resp.push(RespSample {
+                        ts,
+                        raw,
+                        unit: RAW_ADC.to_string(),
+                    });
                 }
                 if let Some(gx) = p_f64(p, "gravity_x") {
                     out.gravity.push(GravitySample {
@@ -1084,11 +1192,10 @@ pub fn decode_history_records(frames: &[Gen4Frame]) -> Vec<Gen4HistoryRecord> {
         }
         let p = &frame.parsed;
         // K25/K26 are pulse-info packets with their own table — skip them here.
-        if let Some(v) = p_i64(p, "hist_version") {
-            if !BIOMETRIC_VERSIONS.contains(&v) {
+        if let Some(v) = p_i64(p, "hist_version")
+            && !BIOMETRIC_VERSIONS.contains(&v) {
                 continue;
             }
-        }
         let Some(ts) = p_i64(p, "unix") else { continue };
         out.push(Gen4HistoryRecord {
             ts,
@@ -1188,7 +1295,7 @@ fn median_sorted(sorted: &[f64]) -> f64 {
     if n == 0 {
         return 0.0;
     }
-    if n % 2 == 0 {
+    if n.is_multiple_of(2) {
         (sorted[n / 2 - 1] + sorted[n / 2]) / 2.0
     } else {
         sorted[n / 2]
@@ -1231,7 +1338,12 @@ fn detrend(values: &[f64]) -> Vec<f64> {
     let n_f = n as f64;
     let mean_t = (n_f - 1.0) / 2.0;
     let mean_x: f64 = values.iter().sum::<f64>() / n_f;
-    let var_t: f64 = (0..n).map(|i| { let d = i as f64 - mean_t; d * d }).sum();
+    let var_t: f64 = (0..n)
+        .map(|i| {
+            let d = i as f64 - mean_t;
+            d * d
+        })
+        .sum();
     let cov: f64 = values
         .iter()
         .enumerate()
@@ -1282,20 +1394,36 @@ pub fn compute_spo2_series(records: &[Gen4HistoryRecord], window: usize) -> Vec<
     for end in window..=records.len() {
         let slice = &records[end - window..end];
         let ts = slice.last().unwrap().ts;
-        let reds: Vec<f64> = slice.iter().filter_map(|r| r.spo2_red.map(|v| v as f64)).collect();
-        let irs: Vec<f64> = slice.iter().filter_map(|r| r.spo2_ir.map(|v| v as f64)).collect();
+        let reds: Vec<f64> = slice
+            .iter()
+            .filter_map(|r| r.spo2_red.map(|v| v as f64))
+            .collect();
+        let irs: Vec<f64> = slice
+            .iter()
+            .filter_map(|r| r.spo2_ir.map(|v| v as f64))
+            .collect();
         if reds.len() < window || irs.len() < window {
             continue; // gap in data — skip window
         }
         if let Some(r) = compute_spo2_window(&reds, &irs) {
-            out.push(Spo2Estimate { ts, spo2: spo2_from_r(r), r_value: r, motion_rejected: false });
+            out.push(Spo2Estimate {
+                ts,
+                spo2: spo2_from_r(r),
+                r_value: r,
+                motion_rejected: false,
+            });
         } else {
             // Motion-rejected fallback: crude DC ratio
             let dc_red: f64 = reds.iter().sum::<f64>() / reds.len() as f64;
             let dc_ir: f64 = irs.iter().sum::<f64>() / irs.len() as f64;
             if dc_ir > 0.0 {
                 let r = dc_red / dc_ir;
-                out.push(Spo2Estimate { ts, spo2: spo2_from_r(r), r_value: r, motion_rejected: true });
+                out.push(Spo2Estimate {
+                    ts,
+                    spo2: spo2_from_r(r),
+                    r_value: r,
+                    motion_rejected: true,
+                });
             }
         }
     }
@@ -1348,7 +1476,11 @@ pub fn decode_ppg_packets(packets: &[(String, i64)]) -> Vec<(Vec<i64>, i64)> {
                 | ((bytes[off + 1] as i32) << 8)
                 | ((bytes[off + 2] as i32) << 16);
             // Sign-extend from 24-bit two's complement
-            let v = if raw & 0x0080_0000 != 0 { raw | -0x0100_0000i32 } else { raw };
+            let v = if raw & 0x0080_0000 != 0 {
+                raw | -0x0100_0000i32
+            } else {
+                raw
+            };
             vals.push(v as i64);
         }
         if !vals.is_empty() {
@@ -1407,11 +1539,18 @@ pub fn detect_ppg_beats(packets: &[(Vec<i64>, i64)]) -> Vec<Gen4PpgBeat> {
         if idxs.is_empty() {
             return 0.0;
         }
-        (idxs.iter().map(|&i| (smoothed[i] as f64).powi(2)).sum::<f64>()
+        (idxs
+            .iter()
+            .map(|&i| (smoothed[i] as f64).powi(2))
+            .sum::<f64>()
             / idxs.len() as f64)
             .sqrt()
     };
-    let peaks = if rms(&peak_pos) >= rms(&peak_neg) { peak_pos } else { peak_neg };
+    let peaks = if rms(&peak_pos) >= rms(&peak_neg) {
+        peak_pos
+    } else {
+        peak_neg
+    };
 
     // Compute RR from sample-index differences, not timestamp differences.
     // BLE notification delivery has jitter (±100 ms typical) so received_ms is only reliable
@@ -1425,7 +1564,7 @@ pub fn detect_ppg_beats(packets: &[(Vec<i64>, i64)]) -> Vec<Gen4PpgBeat> {
             Some(p) => ((idx - p) as f64 * 1000.0 / RATE_HZ).round() as i64,
             None => 0,
         };
-        if rr_ms == 0 || (rr_ms >= RR_MIN_MS && rr_ms <= RR_MAX_MS) {
+        if rr_ms == 0 || (RR_MIN_MS..=RR_MAX_MS).contains(&rr_ms) {
             beats.push(Gen4PpgBeat { ts_ms, rr_ms });
             prev_idx = Some(idx);
         }
@@ -1479,7 +1618,7 @@ pub fn compute_gen4_strain(
     };
 
     let minutes_per_sample = duration_minutes / bpms.len() as f64;
-    let mut zones = vec![0.0f64; 5];
+    let mut zones = [0.0f64; 5];
     for bpm in &bpms {
         let reserve = ((bpm - resting_hr_bpm) / (effective_max - resting_hr_bpm)).clamp(0.0, 1.0);
         let z = if reserve < 0.20 {
@@ -1496,7 +1635,11 @@ pub fn compute_gen4_strain(
         zones[z] += minutes_per_sample;
     }
 
-    let zone_load: f64 = zones.iter().zip([1.0, 2.0, 3.0, 4.0, 5.0]).map(|(m, w)| m * w).sum();
+    let zone_load: f64 = zones
+        .iter()
+        .zip([1.0, 2.0, 3.0, 4.0, 5.0])
+        .map(|(m, w)| m * w)
+        .sum();
     let score = (zone_load / 20.0).clamp(0.0, 21.0);
 
     Some(Gen4StrainResult {
@@ -1729,9 +1872,15 @@ pub fn detect_gen4_sleep(
 
     let mut sessions = Vec::new();
     for run in &runs {
-        if run.2 != "sleep" { continue; }
-        if (run.1 - run.0) <= SLP_MIN_SLEEP_S { continue; }
-        if !slp_confirm_hr(run.0, run.1, &hr, hr_baseline) { continue; }
+        if run.2 != "sleep" {
+            continue;
+        }
+        if (run.1 - run.0) <= SLP_MIN_SLEEP_S {
+            continue;
+        }
+        if !slp_confirm_hr(run.0, run.1, &hr, hr_baseline) {
+            continue;
+        }
 
         let stages = slp_stage_session(run.0, run.1, &grav, &deltas, &hr, rr_samples, &resp);
         let (tib, tst, wake_s, light_s, deep_s, rem_s) = slp_stage_times(run.0, run.1, &stages);
@@ -1779,7 +1928,7 @@ fn slp_imu_scale(imu: &[(i64, i64, i64, i64)]) -> Option<f64> {
     magnitudes.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let scale = magnitudes[magnitudes.len() / 2];
     // Sanity: typical WHOOP IMU at ±2g→±16g gives 200..20000 LSB/g
-    if scale < 50.0 || scale > 50_000.0 {
+    if !(50.0..=50_000.0).contains(&scale) {
         return None;
     }
     Some(scale)
@@ -1895,9 +2044,16 @@ fn slp_median_hr(hr: &[(i64, i64)]) -> Option<f64> {
 }
 
 fn slp_confirm_hr(start: i64, end: i64, hr: &[(i64, i64)], baseline: Option<f64>) -> bool {
-    let Some(bl) = baseline else { return true; };
-    let seg: Vec<_> = hr.iter().filter(|&&(ts, _)| ts >= start && ts <= end).collect();
-    if seg.len() < SLP_HR_REFINE_MIN { return true; }
+    let Some(bl) = baseline else {
+        return true;
+    };
+    let seg: Vec<_> = hr
+        .iter()
+        .filter(|&&(ts, _)| ts >= start && ts <= end)
+        .collect();
+    if seg.len() < SLP_HR_REFINE_MIN {
+        return true;
+    }
     let mean = seg.iter().map(|&&(_, b)| b as f64).sum::<f64>() / seg.len() as f64;
     mean <= bl * SLP_HR_MULT
 }
@@ -1925,7 +2081,11 @@ fn slp_stage_session(
     resp: &[(i64, i64)],
 ) -> Vec<Gen4StageSegment> {
     let fallback = || {
-        vec![Gen4StageSegment { start_s: start, end_s: end, stage: "light".into() }]
+        vec![Gen4StageSegment {
+            start_s: start,
+            end_s: end,
+            stage: "light".into(),
+        }]
     };
 
     let (g_seg, d_seg): (Vec<_>, Vec<_>) = grav
@@ -1935,7 +2095,9 @@ fn slp_stage_session(
         .map(|(&g, &d)| (g, d))
         .unzip();
 
-    if g_seg.len() < 2 { return fallback(); }
+    if g_seg.len() < 2 {
+        return fallback();
+    }
 
     let hr_seg: Vec<(i64, i64)> = hr
         .iter()
@@ -1962,7 +2124,9 @@ fn slp_stage_session(
         .collect();
 
     let ep_idx = |ts_s: f64| -> Option<usize> {
-        if ts_s < start as f64 || ts_s > end as f64 { return None; }
+        if ts_s < start as f64 || ts_s > end as f64 {
+            return None;
+        }
         let i = ((ts_s - start as f64) / SLP_EPOCH_S) as usize;
         Some(i.min(n_ep - 1))
     };
@@ -1979,7 +2143,9 @@ fn slp_stage_session(
         if let Some(i) = ep_idx(ts as f64) {
             counts[i] += d;
             grav_n[i] += 1;
-            if d >= SLP_MOVE_G { move_n[i] += 1; }
+            if d >= SLP_MOVE_G {
+                move_n[i] += 1;
+            }
         }
     }
     for &(ts, bpm) in &hr_seg {
@@ -1989,11 +2155,10 @@ fn slp_stage_session(
         }
     }
     for &(ts_ms, rr_ms) in &rr_seg {
-        if let Some(i) = ep_idx((ts_ms / 1000) as f64) {
-            if (300..=2500).contains(&rr_ms) {
+        if let Some(i) = ep_idx((ts_ms / 1000) as f64)
+            && (300..=2500).contains(&rr_ms) {
                 rr_buck[i].push(rr_ms as f64);
             }
-        }
     }
     for &(ts, raw) in &resp_seg {
         if let Some(i) = ep_idx(ts as f64) {
@@ -2002,20 +2167,39 @@ fn slp_stage_session(
     }
 
     let hr_ep: Vec<f64> = (0..n_ep)
-        .map(|i| if hr_cnt[i] > 0 { hr_sum[i] / hr_cnt[i] as f64 } else { f64::NAN })
+        .map(|i| {
+            if hr_cnt[i] > 0 {
+                hr_sum[i] / hr_cnt[i] as f64
+            } else {
+                f64::NAN
+            }
+        })
         .collect();
     let mv_ep: Vec<f64> = (0..n_ep)
-        .map(|i| if grav_n[i] > 0 { move_n[i] as f64 / grav_n[i] as f64 } else { 1.0 })
+        .map(|i| {
+            if grav_n[i] > 0 {
+                move_n[i] as f64 / grav_n[i] as f64
+            } else {
+                1.0
+            }
+        })
         .collect();
 
     // Cole-Kripke
-    let rescaled: Vec<f64> = counts.iter().map(|&c| (c / SLP_CK_DIV).min(SLP_CK_CLIP)).collect();
+    let rescaled: Vec<f64> = counts
+        .iter()
+        .map(|&c| (c / SLP_CK_DIV).min(SLP_CK_CLIP))
+        .collect();
     let ck: Vec<bool> = (0..n_ep)
         .map(|i| {
             let mut si = 0.0f64;
             for (k, &w) in SLP_CK_WEIGHTS.iter().enumerate() {
                 let j = i as isize - SLP_CK_BACK as isize + k as isize;
-                let a = if j >= 0 && (j as usize) < n_ep { rescaled[j as usize] } else { 0.0 };
+                let a = if j >= 0 && (j as usize) < n_ep {
+                    rescaled[j as usize]
+                } else {
+                    0.0
+                };
                 si += w * a;
             }
             si * SLP_CK_SCALE < 1.0
@@ -2032,20 +2216,47 @@ fn slp_stage_session(
             let lo = i.saturating_sub(half_w);
             let hi = (i + half_w + 1).min(n_ep);
 
-            let win_hr: Vec<f64> = (lo..hi).filter_map(|j| hr_ep[j].is_finite().then_some(hr_ep[j])).collect();
-            let hr_mean = if win_hr.is_empty() { f64::NAN } else { win_hr.iter().sum::<f64>() / win_hr.len() as f64 };
+            let win_hr: Vec<f64> = (lo..hi)
+                .filter_map(|j| hr_ep[j].is_finite().then_some(hr_ep[j]))
+                .collect();
+            let hr_mean = if win_hr.is_empty() {
+                f64::NAN
+            } else {
+                win_hr.iter().sum::<f64>() / win_hr.len() as f64
+            };
 
-            let win_dog: Vec<f64> = (lo..hi).map(|j| if dog.is_empty() { 0.0 } else { dog[j] }).collect();
-            let hr_var = if win_dog.len() >= 2 { slp_std(&win_dog) } else { f64::NAN };
+            let win_dog: Vec<f64> = (lo..hi)
+                .map(|j| if dog.is_empty() { 0.0 } else { dog[j] })
+                .collect();
+            let hr_var = if win_dog.len() >= 2 {
+                slp_std(&win_dog)
+            } else {
+                f64::NAN
+            };
 
             let win_rr: Vec<f64> = (lo..hi).flat_map(|j| rr_buck[j].iter().copied()).collect();
-            let rmssd = if win_rr.len() >= 5 { slp_rmssd(&win_rr) } else { f64::NAN };
+            let rmssd = if win_rr.len() >= 5 {
+                slp_rmssd(&win_rr)
+            } else {
+                f64::NAN
+            };
 
-            let win_resp: Vec<f64> = (lo..hi).flat_map(|j| resp_buck[j].iter().copied()).collect();
+            let win_resp: Vec<f64> = (lo..hi)
+                .flat_map(|j| resp_buck[j].iter().copied())
+                .collect();
             let (resp_rate, rrv) = slp_resp_rate_rrv(&win_resp);
 
             let clock = ((i as f64 - onset as f64) / span).clamp(0.0, 1.0);
-            SlpEpochFeats { move_frac: mv_ep[i], ck_sleep: ck[i], hr: hr_mean, hr_var, rmssd, resp_rate, rrv, clock }
+            SlpEpochFeats {
+                move_frac: mv_ep[i],
+                ck_sleep: ck[i],
+                hr: hr_mean,
+                hr_var,
+                rmssd,
+                resp_rate,
+                rrv,
+                clock,
+            }
         })
         .collect();
 
@@ -2057,12 +2268,48 @@ fn slp_stage_session(
     };
 
     let pct = |vals: Vec<f64>, p: f64| slp_percentile(vals, p);
-    let hr_lo = pct(slp_feats.iter().filter_map(|f| f.hr.is_finite().then_some(f.hr)).collect(), SLP_HR_LO_PCT);
-    let hr_hi = pct(slp_feats.iter().filter_map(|f| f.hr.is_finite().then_some(f.hr)).collect(), SLP_HR_HI_PCT);
-    let rmssd_hi = pct(slp_feats.iter().filter_map(|f| f.rmssd.is_finite().then_some(f.rmssd)).collect(), SLP_HRV_HI_PCT);
-    let hrvar_hi = pct(slp_feats.iter().filter_map(|f| f.hr_var.is_finite().then_some(f.hr_var)).collect(), SLP_HRVAR_HI_PCT);
-    let rrv_hi = pct(slp_feats.iter().filter_map(|f| f.rrv.is_finite().then_some(f.rrv)).collect(), SLP_RRV_HI_PCT);
-    let rrv_lo = pct(slp_feats.iter().filter_map(|f| f.rrv.is_finite().then_some(f.rrv)).collect(), SLP_RRV_LO_PCT);
+    let hr_lo = pct(
+        slp_feats
+            .iter()
+            .filter_map(|f| f.hr.is_finite().then_some(f.hr))
+            .collect(),
+        SLP_HR_LO_PCT,
+    );
+    let hr_hi = pct(
+        slp_feats
+            .iter()
+            .filter_map(|f| f.hr.is_finite().then_some(f.hr))
+            .collect(),
+        SLP_HR_HI_PCT,
+    );
+    let rmssd_hi = pct(
+        slp_feats
+            .iter()
+            .filter_map(|f| f.rmssd.is_finite().then_some(f.rmssd))
+            .collect(),
+        SLP_HRV_HI_PCT,
+    );
+    let hrvar_hi = pct(
+        slp_feats
+            .iter()
+            .filter_map(|f| f.hr_var.is_finite().then_some(f.hr_var))
+            .collect(),
+        SLP_HRVAR_HI_PCT,
+    );
+    let rrv_hi = pct(
+        slp_feats
+            .iter()
+            .filter_map(|f| f.rrv.is_finite().then_some(f.rrv))
+            .collect(),
+        SLP_RRV_HI_PCT,
+    );
+    let rrv_lo = pct(
+        slp_feats
+            .iter()
+            .filter_map(|f| f.rrv.is_finite().then_some(f.rrv))
+            .collect(),
+        SLP_RRV_LO_PCT,
+    );
 
     let mut labels: Vec<&'static str> = feats
         .iter()
@@ -2071,7 +2318,9 @@ fn slp_stage_session(
     labels = slp_smooth(labels);
     labels = slp_physiology(labels, &feats, onset, final_w);
     for i in 0..labels.len() {
-        if i < onset || i > final_w { labels[i] = "wake"; }
+        if i < onset || i > final_w {
+            labels[i] = "wake";
+        }
     }
 
     // Merge consecutive same-stage epochs into segments
@@ -2079,24 +2328,39 @@ fn slp_stage_session(
     for (i, &stage) in labels.iter().enumerate() {
         let seg_s = edges[i].round() as i64;
         let seg_e = edges[i + 1].round() as i64;
-        if let Some(last) = segs.last_mut() {
-            if last.stage == stage { last.end_s = seg_e; continue; }
-        }
-        segs.push(Gen4StageSegment { start_s: seg_s, end_s: seg_e, stage: stage.into() });
+        if let Some(last) = segs.last_mut()
+            && last.stage == stage {
+                last.end_s = seg_e;
+                continue;
+            }
+        segs.push(Gen4StageSegment {
+            start_s: seg_s,
+            end_s: seg_e,
+            stage: stage.into(),
+        });
     }
-    if let Some(last) = segs.last_mut() { last.end_s = end; }
-    if segs.is_empty() { return fallback(); }
+    if let Some(last) = segs.last_mut() {
+        last.end_s = end;
+    }
+    if segs.is_empty() {
+        return fallback();
+    }
     segs
 }
 
 fn slp_onset_final(ck: &[bool]) -> (usize, usize) {
     let n = ck.len();
-    if n == 0 { return (0, 0); }
+    if n == 0 {
+        return (0, 0);
+    }
     let mut onset = None;
     let mut run = 0usize;
     for (i, &s) in ck.iter().enumerate() {
         run = if s { run + 1 } else { 0 };
-        if run >= SLP_ONSET_PERSIST { onset = Some(i + 1 - SLP_ONSET_PERSIST); break; }
+        if run >= SLP_ONSET_PERSIST {
+            onset = Some(i + 1 - SLP_ONSET_PERSIST);
+            break;
+        }
     }
     let final_w = ck.iter().rposition(|&v| v).unwrap_or(n - 1);
     let o = onset.unwrap_or(0);
@@ -2105,19 +2369,33 @@ fn slp_onset_final(ck: &[bool]) -> (usize, usize) {
 
 fn slp_dog_hr(hr_ep: &[f64]) -> Vec<f64> {
     let n = hr_ep.len();
-    if n == 0 { return vec![]; }
+    if n == 0 {
+        return vec![];
+    }
     let known: Vec<usize> = (0..n).filter(|&i| hr_ep[i].is_finite()).collect();
-    if known.is_empty() { return vec![0.0; n]; }
-    let filled: Vec<f64> = (0..n).map(|i| {
-        if hr_ep[i].is_finite() { return hr_ep[i]; }
-        if i <= *known.first().unwrap() { return hr_ep[*known.first().unwrap()]; }
-        if i >= *known.last().unwrap() { return hr_ep[*known.last().unwrap()]; }
-        let lo = known.iter().copied().rev().find(|&k| k <= i).unwrap_or(0);
-        let hi = known.iter().copied().find(|&k| k >= i).unwrap_or(n - 1);
-        if hi == lo { return hr_ep[lo]; }
-        let frac = (i - lo) as f64 / (hi - lo) as f64;
-        hr_ep[lo] + frac * (hr_ep[hi] - hr_ep[lo])
-    }).collect();
+    if known.is_empty() {
+        return vec![0.0; n];
+    }
+    let filled: Vec<f64> = (0..n)
+        .map(|i| {
+            if hr_ep[i].is_finite() {
+                return hr_ep[i];
+            }
+            if i <= *known.first().unwrap() {
+                return hr_ep[*known.first().unwrap()];
+            }
+            if i >= *known.last().unwrap() {
+                return hr_ep[*known.last().unwrap()];
+            }
+            let lo = known.iter().copied().rev().find(|&k| k <= i).unwrap_or(0);
+            let hi = known.iter().copied().find(|&k| k >= i).unwrap_or(n - 1);
+            if hi == lo {
+                return hr_ep[lo];
+            }
+            let frac = (i - lo) as f64 / (hi - lo) as f64;
+            hr_ep[lo] + frac * (hr_ep[hi] - hr_ep[lo])
+        })
+        .collect();
     let k1 = slp_gauss_kernel(SLP_DOG_S1);
     let k2 = slp_gauss_kernel(SLP_DOG_S2);
     let g1 = slp_convolve(&filled, &k1);
@@ -2138,48 +2416,78 @@ fn slp_gauss_kernel(sigma_s: f64) -> Vec<f64> {
 
 fn slp_convolve(x: &[f64], kernel: &[f64]) -> Vec<f64> {
     let r = kernel.len() / 2;
-    if r == 0 || x.is_empty() { return x.to_vec(); }
+    if r == 0 || x.is_empty() {
+        return x.to_vec();
+    }
     let mut pad = Vec::with_capacity(x.len() + 2 * r);
-    for i in 0..r { pad.push(x[(r - i).min(x.len() - 1)]); }
+    for i in 0..r {
+        pad.push(x[(r - i).min(x.len() - 1)]);
+    }
     pad.extend_from_slice(x);
-    for i in 0..r { pad.push(x[x.len().saturating_sub(2 + i)]); }
+    for i in 0..r {
+        pad.push(x[x.len().saturating_sub(2 + i)]);
+    }
     let m = kernel.len();
     let mut out = Vec::with_capacity(x.len());
     for i in 0..=(pad.len().saturating_sub(m)) {
         let acc: f64 = (0..m).map(|j| pad[i + j] * kernel[m - 1 - j]).sum();
         out.push(acc);
-        if out.len() == x.len() { break; }
+        if out.len() == x.len() {
+            break;
+        }
     }
     // pad to x.len() if short (edge case)
-    while out.len() < x.len() { out.push(*out.last().unwrap_or(&0.0)); }
+    while out.len() < x.len() {
+        out.push(*out.last().unwrap_or(&0.0));
+    }
     out
 }
 
-fn slp_classify(f: &SlpEpochFeats, hr_lo: Option<f64>, hr_hi: Option<f64>,
-                rmssd_hi: Option<f64>, hrvar_hi: Option<f64>,
-                rrv_hi: Option<f64>, rrv_lo: Option<f64>) -> &'static str {
+fn slp_classify(
+    f: &SlpEpochFeats,
+    hr_lo: Option<f64>,
+    hr_hi: Option<f64>,
+    rmssd_hi: Option<f64>,
+    hrvar_hi: Option<f64>,
+    rrv_hi: Option<f64>,
+    rrv_lo: Option<f64>,
+) -> &'static str {
     let has_hr = f.hr.is_finite();
-    let hr_low = has_hr && hr_lo.map_or(false, |lo| f.hr <= lo);
-    let hr_high = has_hr && hr_hi.map_or(false, |hi| f.hr >= hi);
-    let parasynth_hi = f.rmssd.is_finite() && rmssd_hi.map_or(false, |hi| f.rmssd >= hi);
-    let hrvar_high = f.hr_var.is_finite() && hrvar_hi.map_or(false, |hi| f.hr_var >= hi);
+    let hr_low = has_hr && hr_lo.is_some_and(|lo| f.hr <= lo);
+    let hr_high = has_hr && hr_hi.is_some_and(|hi| f.hr >= hi);
+    let parasynth_hi = f.rmssd.is_finite() && rmssd_hi.is_some_and(|hi| f.rmssd >= hi);
+    let hrvar_high = f.hr_var.is_finite() && hrvar_hi.is_some_and(|hi| f.hr_var >= hi);
     let cardiac_act = hr_high || hrvar_high;
-    let rrv_irr = f.rrv.is_finite() && rrv_hi.map_or(false, |hi| f.rrv >= hi);
-    let rrv_reg = !f.rrv.is_finite() || rrv_lo.map_or(false, |lo| f.rrv <= lo);
+    let rrv_irr = f.rrv.is_finite() && rrv_hi.is_some_and(|hi| f.rrv >= hi);
+    let rrv_reg = !f.rrv.is_finite() || rrv_lo.is_some_and(|lo| f.rrv <= lo);
     let still = f.move_frac <= SLP_STILL_MV;
     let moving = f.move_frac >= SLP_WAKE_MV;
 
-    if moving && (cardiac_act || !has_hr) { return "wake"; }
-    if still && parasynth_hi && hr_low && rrv_reg { return "deep"; }
-    if still && cardiac_act && rrv_irr { return "rem"; }
-    if still && hr_high && hrvar_high && !f.rrv.is_finite() { return "rem"; }
+    if moving && (cardiac_act || !has_hr) {
+        return "wake";
+    }
+    if still && parasynth_hi && hr_low && rrv_reg {
+        return "deep";
+    }
+    if still && cardiac_act && rrv_irr {
+        return "rem";
+    }
+    if still && hr_high && hrvar_high && !f.rrv.is_finite() {
+        return "rem";
+    }
     "light"
 }
 
 fn slp_smooth(mut labels: Vec<&'static str>) -> Vec<&'static str> {
     let n = labels.len();
-    if n == 0 { return labels; }
-    let w = if SLP_SMOOTH % 2 == 0 { SLP_SMOOTH + 1 } else { SLP_SMOOTH };
+    if n == 0 {
+        return labels;
+    }
+    let w = if SLP_SMOOTH.is_multiple_of(2) {
+        SLP_SMOOTH + 1
+    } else {
+        SLP_SMOOTH
+    };
     let half = w / 2;
     let orig = labels.clone();
     for i in 0..n {
@@ -2188,7 +2496,9 @@ fn slp_smooth(mut labels: Vec<&'static str>) -> Vec<&'static str> {
         let mut counts = std::collections::HashMap::<&str, usize>::new();
         let mut order: Vec<&str> = Vec::new();
         for &s in &orig[lo..hi] {
-            if !counts.contains_key(s) { order.push(s); }
+            if !counts.contains_key(s) {
+                order.push(s);
+            }
             *counts.entry(s).or_insert(0) += 1;
         }
         if let Some(&best) = counts.values().max() {
@@ -2201,30 +2511,52 @@ fn slp_smooth(mut labels: Vec<&'static str>) -> Vec<&'static str> {
     labels
 }
 
-fn slp_physiology(mut labels: Vec<&'static str>, feats: &[SlpEpochFeats], onset: usize, final_w: usize) -> Vec<&'static str> {
+fn slp_physiology(
+    mut labels: Vec<&'static str>,
+    feats: &[SlpEpochFeats],
+    onset: usize,
+    final_w: usize,
+) -> Vec<&'static str> {
     let no_rem = (SLP_NO_REM_MIN * 60.0 / SLP_EPOCH_S).round() as usize;
     for (i, f) in feats.iter().enumerate() {
-        if i < onset || i > final_w { continue; }
-        if labels[i] == "rem" && (i - onset) < no_rem { labels[i] = "light"; }
-        if labels[i] == "deep" && f.clock > SLP_DEEP_FRAC { labels[i] = "light"; }
+        if i < onset || i > final_w {
+            continue;
+        }
+        if labels[i] == "rem" && (i - onset) < no_rem {
+            labels[i] = "light";
+        }
+        if labels[i] == "deep" && f.clock > SLP_DEEP_FRAC {
+            labels[i] = "light";
+        }
     }
     labels
 }
 
 fn slp_resp_rate_rrv(raw: &[f64]) -> (f64, f64) {
-    if raw.len() < 8 { return (f64::NAN, f64::NAN); }
+    if raw.len() < 8 {
+        return (f64::NAN, f64::NAN);
+    }
     let mean = raw.iter().sum::<f64>() / raw.len() as f64;
     let x: Vec<f64> = raw.iter().map(|&v| v - mean).collect();
-    if x.iter().all(|&v| v.abs() < 1e-12) { return (f64::NAN, f64::NAN); }
+    if x.iter().all(|&v| v.abs() < 1e-12) {
+        return (f64::NAN, f64::NAN);
+    }
     let sd = slp_std(&x);
-    if sd <= 0.0 { return (f64::NAN, f64::NAN); }
+    if sd <= 0.0 {
+        return (f64::NAN, f64::NAN);
+    }
     let peaks = slp_find_peaks(&x, 2, 0.0);
-    if peaks.len() < 3 { return (f64::NAN, f64::NAN); }
-    let ivs: Vec<f64> = peaks.windows(2)
+    if peaks.len() < 3 {
+        return (f64::NAN, f64::NAN);
+    }
+    let ivs: Vec<f64> = peaks
+        .windows(2)
         .map(|w| (w[1] - w[0]) as f64)
-        .filter(|&iv| iv >= 1.5 && iv <= 12.0)
+        .filter(|&iv| (1.5..=12.0).contains(&iv))
         .collect();
-    if ivs.len() < 2 { return (f64::NAN, f64::NAN); }
+    if ivs.len() < 2 {
+        return (f64::NAN, f64::NAN);
+    }
     let mut sorted = ivs.clone();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
     (60.0 / sorted[sorted.len() / 2], slp_std(&ivs))
@@ -2232,85 +2564,133 @@ fn slp_resp_rate_rrv(raw: &[f64]) -> (f64, f64) {
 
 fn slp_find_peaks(x: &[f64], distance: usize, height: f64) -> Vec<usize> {
     let n = x.len();
-    if n < 3 { return vec![]; }
+    if n < 3 {
+        return vec![];
+    }
     let mut candidates = Vec::new();
     let mut i = 1usize;
     while i < n - 1 {
         if x[i] > x[i - 1] && x[i] >= height {
             let mut j = i;
-            while j + 1 < n && x[j + 1] == x[i] { j += 1; }
-            if j + 1 < n && x[j + 1] < x[i] { candidates.push((i + j) / 2); }
+            while j + 1 < n && x[j + 1] == x[i] {
+                j += 1;
+            }
+            if j + 1 < n && x[j + 1] < x[i] {
+                candidates.push((i + j) / 2);
+            }
             i = j + 1;
-        } else { i += 1; }
+        } else {
+            i += 1;
+        }
     }
-    if distance <= 1 || candidates.is_empty() { return candidates; }
+    if distance <= 1 || candidates.is_empty() {
+        return candidates;
+    }
     let mut by_h = candidates.clone();
     by_h.sort_by(|&a, &b| x[b].partial_cmp(&x[a]).unwrap_or(std::cmp::Ordering::Equal));
     let mut keep = vec![true; candidates.len()];
-    let idx_of: std::collections::HashMap<usize, usize> =
-        candidates.iter().enumerate().map(|(i, &v)| (v, i)).collect();
+    let idx_of: std::collections::HashMap<usize, usize> = candidates
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| (v, i))
+        .collect();
     for &p in &by_h {
         let pi = idx_of[&p];
-        if !keep[pi] { continue; }
+        if !keep[pi] {
+            continue;
+        }
         for (qi, &q) in candidates.iter().enumerate() {
             if qi != pi && keep[qi] && (q as isize - p as isize).unsigned_abs() < distance {
                 keep[qi] = false;
             }
         }
     }
-    candidates.iter().zip(keep.iter()).filter(|&(_, &k)| k).map(|(&c, _)| c).collect()
+    candidates
+        .iter()
+        .zip(keep.iter())
+        .filter(|&(_, &k)| k)
+        .map(|(&c, _)| c)
+        .collect()
 }
 
 fn slp_std(vals: &[f64]) -> f64 {
-    if vals.is_empty() { return 0.0; }
+    if vals.is_empty() {
+        return 0.0;
+    }
     let mean = vals.iter().sum::<f64>() / vals.len() as f64;
     let var = vals.iter().map(|&v| (v - mean).powi(2)).sum::<f64>() / vals.len() as f64;
     var.sqrt()
 }
 
 fn slp_rmssd(rr: &[f64]) -> f64 {
-    if rr.len() < 2 { return f64::NAN; }
+    if rr.len() < 2 {
+        return f64::NAN;
+    }
     let sq: f64 = rr.windows(2).map(|w| (w[1] - w[0]).powi(2)).sum();
     (sq / (rr.len() - 1) as f64).sqrt()
 }
 
 fn slp_percentile(mut vals: Vec<f64>, pct: f64) -> Option<f64> {
-    if vals.is_empty() { return None; }
+    if vals.is_empty() {
+        return None;
+    }
     vals.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let n = vals.len();
     let idx = pct / 100.0 * (n - 1) as f64;
     let lo = idx.floor() as usize;
     let hi = (idx.ceil() as usize).min(n - 1);
-    if lo == hi { return Some(vals[lo]); }
+    if lo == hi {
+        return Some(vals[lo]);
+    }
     Some(vals[lo] + (idx - lo as f64) * (vals[hi] - vals[lo]))
 }
 
-fn slp_stage_times(start: i64, end: i64, stages: &[Gen4StageSegment]) -> (f64, f64, f64, f64, f64, f64) {
+fn slp_stage_times(
+    start: i64,
+    end: i64,
+    stages: &[Gen4StageSegment],
+) -> (f64, f64, f64, f64, f64, f64) {
     let tib = (end - start) as f64;
     let (mut wk, mut lt, mut dp, mut rm) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
     for seg in stages {
         let d = (seg.end_s - seg.start_s) as f64;
         match seg.stage.as_str() {
-            "wake" => wk += d, "light" => lt += d, "deep" => dp += d, "rem" => rm += d, _ => {}
+            "wake" => wk += d,
+            "light" => lt += d,
+            "deep" => dp += d,
+            "rem" => rm += d,
+            _ => {}
         }
     }
     (tib, tib - wk, wk, lt, dp, rm)
 }
 
 fn slp_session_resting_hr(start: i64, end: i64, hr: &[(i64, i64)]) -> Option<f64> {
-    let seg: Vec<_> = hr.iter().filter(|&&(ts, _)| ts >= start && ts <= end).collect();
-    if seg.is_empty() { return None; }
+    let seg: Vec<_> = hr
+        .iter()
+        .filter(|&&(ts, _)| ts >= start && ts <= end)
+        .collect();
+    if seg.is_empty() {
+        return None;
+    }
     let win_s: i64 = 5 * 60;
     let mut means = Vec::new();
     let mut t = start;
     while t < end {
-        let win: Vec<f64> = seg.iter()
+        let win: Vec<f64> = seg
+            .iter()
             .filter(|&&&(ts, _)| ts >= t && ts < t + win_s)
-            .map(|&&(_, b)| b as f64).collect();
-        if !win.is_empty() { means.push(win.iter().sum::<f64>() / win.len() as f64); }
+            .map(|&&(_, b)| b as f64)
+            .collect();
+        if !win.is_empty() {
+            means.push(win.iter().sum::<f64>() / win.len() as f64);
+        }
         t += win_s;
     }
-    means.iter().copied().reduce(f64::min)
+    means
+        .iter()
+        .copied()
+        .reduce(f64::min)
         .or_else(|| {
             let all: Vec<f64> = seg.iter().map(|&&(_, b)| b as f64).collect();
             Some(all.iter().sum::<f64>() / all.len() as f64)
@@ -2321,24 +2701,41 @@ fn slp_session_resting_hr(start: i64, end: i64, hr: &[(i64, i64)]) -> Option<f64
 fn slp_session_avg_hrv(start: i64, end: i64, rr: &[(i64, i64)]) -> Option<f64> {
     let seg: Vec<_> = rr
         .iter()
-        .filter(|&&(ts_ms, _)| { let s = ts_ms / 1000; s >= start && s <= end })
+        .filter(|&&(ts_ms, _)| {
+            let s = ts_ms / 1000;
+            s >= start && s <= end
+        })
         .collect();
-    if seg.is_empty() { return None; }
+    if seg.is_empty() {
+        return None;
+    }
     let win_s: i64 = 5 * 60;
     let mut vals = Vec::new();
     let mut t = start;
     while t < end {
-        let bucket: Vec<f64> = seg.iter()
-            .filter(|&&&(ts_ms, _)| { let s = ts_ms / 1000; s >= t && s < t + win_s })
-            .map(|&&(_, rr_ms)| rr_ms as f64).collect();
-        let filtered: Vec<f64> = bucket.into_iter().filter(|&v| v >= 300.0 && v <= 2500.0).collect();
+        let bucket: Vec<f64> = seg
+            .iter()
+            .filter(|&&&(ts_ms, _)| {
+                let s = ts_ms / 1000;
+                s >= t && s < t + win_s
+            })
+            .map(|&&(_, rr_ms)| rr_ms as f64)
+            .collect();
+        let filtered: Vec<f64> = bucket
+            .into_iter()
+            .filter(|&v| (300.0..=2500.0).contains(&v))
+            .collect();
         if filtered.len() >= 2 {
             let r = slp_rmssd(&filtered);
-            if r.is_finite() { vals.push(r); }
+            if r.is_finite() {
+                vals.push(r);
+            }
         }
         t += win_s;
     }
-    if vals.is_empty() { return None; }
+    if vals.is_empty() {
+        return None;
+    }
     Some((vals.iter().sum::<f64>() / vals.len() as f64 * 10.0).round() / 10.0)
 }
 
@@ -2379,20 +2776,26 @@ pub fn compute_gen4_recovery(
     skin_temp_delta_c: f64,
     prior_strain: f64, // 0..21
 ) -> Option<Gen4RecoveryResult> {
-    if !hrv_rmssd_ms.is_finite() || hrv_rmssd_ms <= 0.0 { return None; }
-    if !hrv_baseline_ms.is_finite() || hrv_baseline_ms <= 0.0 { return None; }
-    if !resting_hr_bpm.is_finite() || resting_hr_bpm <= 0.0 { return None; }
-    if !resting_hr_baseline_bpm.is_finite() || resting_hr_baseline_bpm <= 0.0 { return None; }
+    if !hrv_rmssd_ms.is_finite() || hrv_rmssd_ms <= 0.0 {
+        return None;
+    }
+    if !hrv_baseline_ms.is_finite() || hrv_baseline_ms <= 0.0 {
+        return None;
+    }
+    if !resting_hr_bpm.is_finite() || resting_hr_bpm <= 0.0 {
+        return None;
+    }
+    if !resting_hr_baseline_bpm.is_finite() || resting_hr_baseline_bpm <= 0.0 {
+        return None;
+    }
 
     let clamp = |v: f64| v.clamp(0.0, 100.0);
 
     let hrv_score = clamp(70.0 + (hrv_rmssd_ms / hrv_baseline_ms - 1.0) * 100.0);
     let rhr_score = clamp(70.0 + (resting_hr_baseline_bpm - resting_hr_bpm) * 5.0);
     // Sleep score: 50% efficiency + 50% duration vs 8 h target
-    let sleep_score = clamp(
-        sleep_efficiency.clamp(0.0, 1.0) * 50.0
-            + (sleep_tst_min / 480.0).min(1.0) * 50.0,
-    );
+    let sleep_score =
+        clamp(sleep_efficiency.clamp(0.0, 1.0) * 50.0 + (sleep_tst_min / 480.0).min(1.0) * 50.0);
     let temperature_score = clamp(100.0 - skin_temp_delta_c.abs() * 50.0);
     let strain_score = clamp(100.0 - prior_strain.clamp(0.0, 21.0) / 21.0 * 60.0);
     // Respiratory contribution is neutral (10%) until calibrated resp rate is available
@@ -2444,9 +2847,8 @@ fn find_peaks_with_min_dist(samples: &[i64], min_dist: usize, invert: bool) -> V
 
     let peak_vals: Vec<f64> = candidates.iter().map(|&i| sig[i] as f64).collect();
     let mean = peak_vals.iter().sum::<f64>() / peak_vals.len() as f64;
-    let std = (peak_vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>()
-        / peak_vals.len() as f64)
-        .sqrt();
+    let std =
+        (peak_vals.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / peak_vals.len() as f64).sqrt();
     let threshold = mean - 0.3 * std;
 
     let mut peaks: Vec<usize> = Vec::new();
@@ -2454,14 +2856,13 @@ fn find_peaks_with_min_dist(samples: &[i64], min_dist: usize, invert: bool) -> V
         if (sig[c] as f64) < threshold {
             continue;
         }
-        if let Some(&last) = peaks.last() {
-            if c - last < min_dist {
+        if let Some(&last) = peaks.last()
+            && c - last < min_dist {
                 if sig[c] > sig[last] {
                     *peaks.last_mut().unwrap() = c;
                 }
                 continue;
             }
-        }
         peaks.push(c);
     }
     peaks

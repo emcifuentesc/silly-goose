@@ -88,6 +88,53 @@ struct HealthMetricSnapshot: Identifiable {
   }
 }
 
+struct HealthMetricSnapshotConfig {
+  let id: String
+  let route: HealthRoute
+  let group: HealthMetricGroup
+  let title: String
+  let value: String
+  let unit: String
+  let status: String
+  let freshness: String
+  let provenance: String
+  let source: HealthDataSource
+  let systemImage: String
+  let tint: Color
+  let trendValues: [Double]
+  let range: String
+
+  func makeSnapshot() -> HealthMetricSnapshot {
+    let trend = HealthTrendModel(
+      id: id,
+      title: title,
+      rangeLabel: range,
+      summary: "\(status) | \(range)",
+      analysis: "No local data has been captured for this trend yet.",
+      resources: ["The Basics", "How \(title) is calculated"],
+      points: trendValues.enumerated().map { index, value in
+        HealthTrendPoint(label: "D\(index + 1)", value: value)
+      }
+    )
+
+    return HealthMetricSnapshot(
+      id: id,
+      route: route,
+      group: group,
+      title: title,
+      value: value,
+      unit: unit,
+      status: status,
+      freshness: freshness,
+      provenance: provenance,
+      source: source,
+      systemImage: systemImage,
+      tint: tint,
+      trend: trend
+    )
+  }
+}
+
 extension HealthRoute {
   var supportsScoreDatePicker: Bool {
     switch self {
